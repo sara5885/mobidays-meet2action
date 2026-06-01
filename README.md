@@ -9,9 +9,12 @@
 # 1. 설치
 make install            # 또는: pip install -r requirements.txt
 
-# 2. (선택) LLM 설정 — 기본은 mock이라 키 없이도 동작
+# 2. (선택) LLM 설정 — 기본은 mock이라 키/설치 없이도 전체 흐름 동작
 cp .env.example .env
-#   실제 Gemini 호출 시 .env 에서 LLM_PROVIDER=gemini, GEMINI_API_KEY=... 설정
+#   provider 3종 (LLM_PROVIDER):
+#     mock   — 결정적 응답(기본). 시연·테스트용
+#     gemini — 실제 Gemini 2.5 Flash. GEMINI_API_KEY 필요 (무료 티어 분당 5회 제한)
+#     ollama — 로컬 LLM(무료·무제한·온프레미스). `ollama serve` + `ollama pull qwen2.5:7b`
 
 # 3. 파이프라인 실행 (transcript → DuckDB 적재 → 액션아이템)
 make run        # 제공된 실데이터 1건 적재
@@ -26,8 +29,13 @@ make dashboard          # streamlit run dashboard/app.py
 # (스키마가 바뀐 버전으로 처음 실행할 때는 기존 DB 제거 후 다시 적재)
 make clean && make demo
 
-# 테스트 (멱등성·스키마 검증)
+# 테스트 (멱등성·스키마·상태보존 3종, 항상 mock으로 결정적 실행)
 make test
+
+# (가산점) 로컬 Whisper STT — mp3 → 화자분리 transcript JSON
+make stt                              # 제공 샘플 mp3
+make stt FILE=data/raw/다른회의.mp3    # 임의 음성 파일
+PYTHONPATH=src python -m meeting_ai.pipeline data/stt/<파일명>.json
 ```
 
 > **데이터 적재 절차**: `make run` 이 `data/raw/ko_meeting_3speakers.json`(제공 실데이터)을 읽어
@@ -89,7 +97,8 @@ LLM 출력은 비결정적이라 제목이 흔들릴 수 있어, **회의(meetin
 |---|---|---|
 | 저장소 | **DuckDB** | 파일 1개로 끝나는 임베디드 OLAP. 대시보드 집계 쿼리에 SQLite보다 강함. 100명 규모 PoC엔 Postgres 운영비가 과함 |
 | 검증 | **pydantic** | LLM 출력을 타입·범위·필수값으로 강제 → 신뢰 불가 출력을 적재 전 차단 |
-| LLM | **Gemini 2.0 Flash (+ mock)** | 무료 티어 넉넉 + native JSON output. provider 추상화로 mock↔실제 토글 |
+| LLM | **mock / Gemini 2.5 Flash / Ollama** | provider 추상화로 3종 토글. Gemini=무료 native JSON, Ollama=무료·무제한·온프레미스(외부 유출 금지 충족), mock=결정적 시연 |
+| STT | **로컬 Whisper** | 외부 유출 금지라 클라우드 STT 불가. 비용 0·온프레미스. 화자분리는 LLM 보조 |
 | 데이터 처리 | **polars** | 대시보드 조회 성능, 표현력 |
 | 대시보드 | **Streamlit** | Python 단일 스택, 빠른 PoC |
 
@@ -117,12 +126,15 @@ LLM 출력은 비결정적이라 제목이 흔들릴 수 있어, **회의(meetin
   기본값(`LLM_PROVIDER=mock`)은 외부 전송 없이 전체 흐름을 시연합니다.
 - **이슈 키워드**: 형태소 분석기 의존을 피하려 정규식 토큰화+조사 제거+불용어 기반 BoW로 구현.
   데이터가 누적되면 임베딩 클러스터링으로 고도화 가능(향후 확장).
-- 음성(STT)은 동봉 transcript JSON으로 대체. 로컬 Whisper 적용은 가산점 항목으로 별도 추가 예정.
+- **STT**: 제공 transcript JSON으로도 동작하고, 로컬 Whisper로 mp3에서 직접 생성도 지원(`make stt`).
+  Whisper는 받아쓰기만 하므로 화자 분리는 LLM 보조로 처리(정식 diarization은 향후 pyannote 등으로 대체).
 
 ## 현재 상태
 
-✅ 핵심 파이프라인: transcript → 정제 → DuckDB 멱등 적재 → mock 추출(스키마 강제/검증/재시도/환각필터) → 대시보드
-✅ 대시보드 위젯 4개 (추이 / 담당자별 미완료 / 반복 키워드 / confidence 분포+드릴다운)
-✅ 다회의 적재(`make run-all`), 멱등성·스키마 테스트 통과
+✅ 핵심 파이프라인: transcript → 정제 → DuckDB 멱등 적재 → LLM 추출(스키마 강제/검증/재시도/환각필터) → 대시보드
+✅ 실제 LLM 호출 PoC — **Gemini 2.5 Flash** 및 **Ollama(로컬)** 동작 확인 (provider 추상화)
+✅ 대시보드 위젯 4개 + 상태 편집(진행상황 업데이트 루프) + 변경 이력
+✅ 로컬 Whisper STT + 화자 분리 (임의 mp3 → transcript JSON)
+✅ 멱등성·스키마·상태보존 테스트 3종 통과
 
-⬜ 남은 작업: 실제 Gemini 호출 PoC / 기획안 5p / 대시보드 화면 녹화 / (가산점) Whisper STT·precision-recall
+⬜ 남은 작업: 기획안 PDF 제출본 / 대시보드 화면 녹화 / (가산점) precision-recall·임베딩 유사검색

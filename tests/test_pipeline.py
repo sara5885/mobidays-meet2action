@@ -1,8 +1,14 @@
-"""뼈대 검증 테스트: 멱등성 + 스키마 강제."""
+"""뼈대 검증 테스트: 멱등성 + 스키마 강제 + 상태 보존.
+
+테스트는 실제 LLM(.env의 gemini/ollama)을 호출하지 않도록 항상 mock provider로 고정한다.
+→ 결정적이고 빠르며 네트워크/rate limit에 영향받지 않음.
+"""
 import duckdb
 
 from meeting_ai import config, db
 from meeting_ai.pipeline import run
+
+config.LLM_PROVIDER = "mock"  # 테스트는 항상 mock (환경 독립적)
 
 
 def test_run_and_idempotency():
