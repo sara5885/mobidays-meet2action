@@ -1,14 +1,26 @@
-"""DuckDB 적재 레이어. 멱등성(idempotency) 보장이 핵심.
+"""DuckDB 적재 레이어. 멱등성(idempotency)과 '추출/트래킹 분리'가 핵심.
 
-전략: 모든 테이블에 PRIMARY KEY를 두고, 적재 전 해당 meeting_id 행을 DELETE 후 INSERT.
-→ 파이프라인을 몇 번을 재실행해도 같은 결과(중복 없음, 깨짐 없음)를 보장한다.
+레이어 분리:
+  - action_items: AI 추출 결과. 파이프라인 재실행마다 delete-replace (멱등 재생성).
+  - action_status: 사람이 관리하는 진행상황(open/in_progress/done/blocked + 지연사유).
+    파이프라인이 절대 건드리지 않음 → 재실행해도 사람의 상태 변경이 보존된다.
+  - status_history: 상태 변경 이력(감사 추적).
+
+두 레이어는 안정 식별자 action_key(= meeting_id + 정규화 제목 해시)로 연결된다.
+LLM 출력은 비결정적이라 제목이 미세하게 흔들릴 수 있어, meeting_id를 멱등 단위로
+삼고 회의 단위로 추출을 통째 교체하되, 상태는 action_key로 따로 보존한다.
 """
 from __future__ import annotations
+
+import hashlib
+import re
 
 import duckdb
 
 from . import config
 from .schemas import ActionItem, Chunk, Utterance
+
+VALID_STATUSES = ("open", "in_progress", "done", "blocked")
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meetings (
@@ -35,19 +47,46 @@ CREATE TABLE IF NOT EXISTS chunks (
     text       VARCHAR,
     PRIMARY KEY (meeting_id, chunk_id)
 );
+-- 추출 레이어 (재실행마다 갱신)
 CREATE TABLE IF NOT EXISTS action_items (
     meeting_id    VARCHAR,
     action_id     INTEGER,
+    action_key    VARCHAR,
     title         VARCHAR,
     owner_role    VARCHAR,
     due           VARCHAR,
-    status        VARCHAR,
     confidence    DOUBLE,
     source_seg_ids VARCHAR,
     source_quote  VARCHAR,
     PRIMARY KEY (meeting_id, action_id)
 );
+-- 트래킹 레이어 (사람 소유, 재실행에도 보존)
+CREATE TABLE IF NOT EXISTS action_status (
+    action_key   VARCHAR PRIMARY KEY,
+    meeting_id   VARCHAR,
+    status       VARCHAR DEFAULT 'open',
+    delay_reason VARCHAR,
+    updated_at   TIMESTAMP,
+    updated_by   VARCHAR
+);
+CREATE SEQUENCE IF NOT EXISTS seq_status_history START 1;
+CREATE TABLE IF NOT EXISTS status_history (
+    id         INTEGER DEFAULT nextval('seq_status_history'),
+    action_key VARCHAR,
+    old_status VARCHAR,
+    new_status VARCHAR,
+    reason     VARCHAR,
+    changed_at TIMESTAMP,
+    changed_by VARCHAR
+);
 """
+
+
+def make_action_key(meeting_id: str, title: str) -> str:
+    """제목 정규화 후 해시 → 재추출 시에도 같은 액션아이템을 같은 키로 식별."""
+    norm = re.sub(r"\s+", "", title.lower())
+    h = hashlib.md5(f"{meeting_id}|{norm}".encode("utf-8")).hexdigest()[:16]
+    return h
 
 
 def connect() -> duckdb.DuckDBPyConnection:
@@ -89,13 +128,49 @@ def upsert_chunks(con, meeting_id: str, items: list[Chunk]) -> None:
 
 
 def upsert_action_items(con, meeting_id: str, items: list[ActionItem]) -> None:
+    """추출 결과를 멱등 교체하고, 신규 action_key에 대해서만 상태행을 초기화한다.
+    기존 action_status(사람 수정분)는 보존된다."""
     _replace(con, "action_items", meeting_id)
     rows = []
+    keys = []
     for idx, a in enumerate(items):
+        key = make_action_key(meeting_id, a.title)
+        keys.append((key, a.status.value))
         rows.append([
-            a.meeting_id, idx, a.title, a.owner_role, a.due, a.status.value,
+            a.meeting_id, idx, key, a.title, a.owner_role, a.due,
             a.confidence, ",".join(map(str, a.source_seg_ids)), a.source_quote,
         ])
     con.executemany(
         "INSERT INTO action_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows
     )
+    # 신규 액션아이템만 상태행 생성 (기존 사람 수정분은 건드리지 않음 → 보존)
+    for key, init_status in keys:
+        exists = con.execute(
+            "SELECT 1 FROM action_status WHERE action_key = ?", [key]).fetchone()
+        if not exists:
+            con.execute(
+                "INSERT INTO action_status (action_key, meeting_id, status, updated_at, updated_by)"
+                " VALUES (?, ?, ?, now(), 'pipeline')",
+                [key, meeting_id, init_status])
+
+
+def update_status(con, action_key: str, new_status: str,
+                  reason: str | None = None, by: str = "dashboard") -> None:
+    """상태 변경 + 이력 기록. blocked일 때만 delay_reason 저장."""
+    if new_status not in VALID_STATUSES:
+        raise ValueError(f"허용되지 않는 상태: {new_status}")
+    row = con.execute(
+        "SELECT status FROM action_status WHERE action_key = ?", [action_key]).fetchone()
+    old = row[0] if row else None
+    reason = reason if new_status == "blocked" else None
+    if row:
+        con.execute(
+            "UPDATE action_status SET status=?, delay_reason=?, updated_at=now(), updated_by=?"
+            " WHERE action_key=?", [new_status, reason, by, action_key])
+    else:
+        con.execute(
+            "INSERT INTO action_status (action_key, status, delay_reason, updated_at, updated_by)"
+            " VALUES (?, ?, ?, now(), ?)", [action_key, new_status, reason, by])
+    con.execute(
+        "INSERT INTO status_history (action_key, old_status, new_status, reason, changed_at, changed_by)"
+        " VALUES (?, ?, ?, ?, now(), ?)", [action_key, old, new_status, reason, by])

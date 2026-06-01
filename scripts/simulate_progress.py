@@ -15,24 +15,23 @@ import datetime as dt
 
 import duckdb
 
-from meeting_ai import config
+from meeting_ai import config, db
 
 TODAY = dt.date(2026, 6, 1)  # 데모 기준일 (env 고정으로 재현성 확보)
 
 
 def _statuses(n: int, weeks_ago: float) -> list[str]:
-    """경과 주차에 따라 n개 액션아이템의 상태 배분."""
+    """경과 주차에 따라 n개 액션아이템의 상태 배분 (done/in_progress/blocked/open)."""
     if weeks_ago >= 3:
-        done_ratio, prog_ratio = 1.0, 0.0
+        done_r, prog_r, block_r = 1.0, 0.0, 0.0
     elif weeks_ago >= 2:
-        done_ratio, prog_ratio = 0.6, 0.2
+        done_r, prog_r, block_r = 0.5, 0.25, 0.25  # 일부 지연(blocked)
     elif weeks_ago >= 1:
-        done_ratio, prog_ratio = 0.3, 0.3
+        done_r, prog_r, block_r = 0.25, 0.5, 0.0
     else:
-        done_ratio, prog_ratio = 0.0, 0.1
-    n_done = round(n * done_ratio)
-    n_prog = round(n * prog_ratio)
-    out = ["done"] * n_done + ["in_progress"] * n_prog
+        done_r, prog_r, block_r = 0.0, 0.1, 0.0
+    n_done, n_prog, n_block = round(n * done_r), round(n * prog_r), round(n * block_r)
+    out = ["done"] * n_done + ["in_progress"] * n_prog + ["blocked"] * n_block
     out += ["open"] * (n - len(out))
     return out[:n]
 
@@ -45,15 +44,15 @@ def main() -> None:
         if date is None:
             continue
         weeks_ago = (TODAY - date).days / 7
-        ids = [r[0] for r in con.execute(
-            "SELECT action_id FROM action_items WHERE meeting_id=? ORDER BY action_id",
+        keys = [r[0] for r in con.execute(
+            "SELECT action_key FROM action_items WHERE meeting_id=? ORDER BY action_id",
             [mid]).fetchall()]
-        statuses = _statuses(len(ids), weeks_ago)
-        for aid, sts in zip(ids, statuses):
-            con.execute(
-                "UPDATE action_items SET status=? WHERE meeting_id=? AND action_id=?",
-                [sts, mid, aid])
-        total += len(ids)
+        statuses = _statuses(len(keys), weeks_ago)
+        # 트래킹 레이어(action_status)에 기록. 가산점 '진행상황 업데이트 루프' mock.
+        for key, sts in zip(keys, statuses):
+            reason = "광고주 컨펌 지연" if sts == "blocked" else None
+            db.update_status(con, key, sts, reason, by="progress-sim")
+        total += len(keys)
     con.close()
     print(f"✅ 진행상황 시뮬레이션 완료: {len(meetings)}개 회의, {total}개 액션아이템 상태 갱신")
 

@@ -20,6 +20,11 @@ make demo       # run-all + 진행상황 시뮬레이션 (대시보드용 권장
 
 # 4. 대시보드 (먼저 make demo 권장)
 make dashboard          # streamlit run dashboard/app.py
+#   대시보드에서 액션아이템 상태(대기/진행중/완료/지연)를 직접 변경·저장 가능
+#   → action_status에 저장되어 파이프라인 재실행에도 보존됨
+
+# (스키마가 바뀐 버전으로 처음 실행할 때는 기존 DB 제거 후 다시 적재)
+make clean && make demo
 
 # 테스트 (멱등성·스키마 검증)
 make test
@@ -53,14 +58,30 @@ Chunk[]  ──► DuckDB (utterances / chunks)        [멱등 적재]
    │
    │  extract.py + llm/*     (프롬프트 → JSON 강제 → 검증 → 재시도 → 환각필터)
    ▼
-ActionItem[] ──► DuckDB (action_items)            [멱등 적재]
+ActionItem[] ──► DuckDB (action_items)            [멱등 적재, 재실행마다 교체]
    │
    ├─► slack_payload.py  →  data/slack_payload_sample.json
-   └─► dashboard/app.py  →  Streamlit 대시보드
+   └─► dashboard/app.py  →  Streamlit 대시보드 (위젯 4개 + 상태 편집)
+                              │
+                              └─► action_status / status_history  (사람이 관리, 보존)
 ```
 
 **모듈 분리 기준**: I/O(loader/db) · 순수 변환(preprocess) · LLM 경계(llm/, extract) ·
 표현(dashboard)을 분리해, LLM provider 교체나 스키마 변경이 다른 층에 번지지 않게 했습니다.
+
+### 추출/트래킹 레이어 분리 (스키마 설계 핵심)
+
+| 테이블 | 소유 | 갱신 정책 |
+|---|---|---|
+| `action_items` | AI 추출 | 파이프라인 재실행마다 meeting_id 단위 delete-replace (멱등) |
+| `action_status` | 사람(담당자) | 상태(open/in_progress/done/blocked)+지연사유. 파이프라인이 건드리지 않아 **재실행에도 보존** |
+| `status_history` | 시스템 | 상태 변경 이력(감사 추적) |
+
+두 레이어는 안정 식별자 `action_key`(= meeting_id + 정규화 제목 해시)로 연결됩니다.
+LLM 출력은 비결정적이라 제목이 흔들릴 수 있어, **회의(meeting_id)를 멱등 단위로 삼아
+추출을 통째 교체하되, 사람이 바꾼 진행상황은 action_key로 따로 보존**합니다.
+이로써 "AI 추출은 멱등하게 재생성 + 사람의 상태 관리는 생존"이 동시에 성립합니다.
+(가산점 항목: 액션아이템 진행상황 업데이트 루프 — `scripts/simulate_progress.py`가 mock 루프)
 
 ## 기술 스택 선택 근거 (trade-off)
 

@@ -36,6 +36,7 @@ class ActionStatus(str, Enum):
     open = "open"
     in_progress = "in_progress"
     done = "done"
+    blocked = "blocked"  # 지연/막힘 (delay_reason과 함께 사용)
 
 
 class ActionItem(BaseModel):

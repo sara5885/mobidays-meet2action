@@ -21,7 +21,7 @@ import streamlit as st
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
-from meeting_ai import config  # noqa: E402
+from meeting_ai import config, db  # noqa: E402
 from meeting_ai.keywords import top_keywords  # noqa: E402
 
 TREND_WEEKS = 12  # 추이 차트에 표시할 주차 수 (현재 주 포함, 과거로)
@@ -57,7 +57,14 @@ if not config.DB_PATH.exists():
 
 con = duckdb.connect(str(config.DB_PATH), read_only=True)
 meetings = con.execute("SELECT * FROM meetings ORDER BY date").pl()
-items = con.execute("SELECT * FROM action_items").pl()
+# 추출(action_items) + 트래킹(action_status) 조인 → 상태는 사람이 관리하는 값
+items = con.execute("""
+    SELECT a.meeting_id, a.action_id, a.action_key, a.title, a.owner_role, a.due,
+           a.confidence, a.source_seg_ids, a.source_quote,
+           COALESCE(s.status, 'open') AS status, s.delay_reason
+    FROM action_items a
+    LEFT JOIN action_status s USING (action_key)
+""").pl()
 utt = con.execute("SELECT meeting_id, text FROM utterances").pl()
 con_total = con.execute("SELECT COUNT(*) FROM action_items").fetchone()[0]
 con.close()
@@ -251,5 +258,48 @@ with c4:
                             unsafe_allow_html=True)
         else:
             st.success("검수가 필요한 낮은 신뢰도 항목이 없습니다.")
+
+# ── 액션아이템 상태 관리 (진행상황 업데이트 루프) ──
+st.write("")
+with st.container(border=True):
+    st.markdown('<div class="wtitle">✏️ 액션아이템 상태 관리</div>'
+                '<div class="wsub">담당자가 진행상황을 갱신 → 추이/미완료 위젯에 반영. '
+                '변경은 트래킹 레이어(action_status)에 저장되어 파이프라인 재실행에도 보존됩니다.</div>',
+                unsafe_allow_html=True)
+
+    STATUS_OPTS = ["open", "in_progress", "done", "blocked"]
+    STATUS_KR = {"open": "⬜ 대기", "in_progress": "🔵 진행중",
+                 "done": "✅ 완료", "blocked": "⛔ 지연/막힘"}
+
+    rows = i_view.sort(["meeting_id", "action_id"]).to_dicts()
+    with st.form("status_form"):
+        edits = {}
+        for r in rows:
+            ck = r["action_key"]
+            col1, col2, col3 = st.columns([3, 1.2, 2])
+            col1.markdown(f"**{r['title']}**<br><span style='color:#888;font-size:12px'>"
+                          f"{r['advertiser']} · {r['owner_role'] or '담당자 미정'} · "
+                          f"기한 {r['due'] or '-'}</span>", unsafe_allow_html=True)
+            cur = r["status"] if r["status"] in STATUS_OPTS else "open"
+            new = col2.selectbox("상태", STATUS_OPTS, index=STATUS_OPTS.index(cur),
+                                 format_func=lambda s: STATUS_KR[s],
+                                 key=f"st_{ck}", label_visibility="collapsed")
+            reason = col3.text_input("지연 사유", value=r.get("delay_reason") or "",
+                                     key=f"rs_{ck}", label_visibility="collapsed",
+                                     placeholder="지연 사유 (blocked일 때)")
+            edits[ck] = (cur, new, reason)
+        submitted = st.form_submit_button("💾 변경사항 저장")
+
+    if submitted:
+        wcon = db.connect()
+        n = 0
+        for ck, (cur, new, reason) in edits.items():
+            cur_reason = next((r.get("delay_reason") or "" for r in rows if r["action_key"] == ck), "")
+            if new != cur or (new == "blocked" and reason != cur_reason):
+                db.update_status(wcon, ck, new, reason or None, by="dashboard")
+                n += 1
+        wcon.close()
+        st.success(f"{n}건 상태를 저장했습니다." if n else "변경된 항목이 없습니다.")
+        st.rerun()
 
 st.caption(f"DB: {config.DB_PATH.name} · 회의 {meetings.height}건 · 액션아이템 {con_total}건")
