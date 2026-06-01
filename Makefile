@@ -1,32 +1,39 @@
-.PHONY: install run run-all synth progress demo dashboard clean test
+# 맥/리눅스에서 python3 기본. 다른 인터프리터 쓰려면: make run PYTHON=python
+PYTHON ?= python3
+
+.PHONY: install run run-all synth progress demo dashboard clean test gemini-check
 
 install:
-	pip install -r requirements.txt
+	$(PYTHON) -m pip install -r requirements.txt
+
+# Gemini 연결 점검 (.env 설정 후)
+gemini-check:
+	PYTHONPATH=src $(PYTHON) scripts/check_gemini.py
 
 # 한 줄 실행: 제공된 실데이터 1건 적재
 run:
-	PYTHONPATH=src python -m meeting_ai.pipeline data/raw/ko_meeting_3speakers.json
+	PYTHONPATH=src $(PYTHON) -m meeting_ai.pipeline data/raw/ko_meeting_3speakers.json
 
 # 모든 회의(실데이터 + 합성) 적재 — 대시보드 추이/키워드 위젯용
 run-all:
-	PYTHONPATH=src python -m meeting_ai.pipeline --all
+	PYTHONPATH=src $(PYTHON) -m meeting_ai.pipeline --all
 
 # 합성 회의 재생성
 synth:
-	PYTHONPATH=src python scripts/gen_synthetic.py
+	PYTHONPATH=src $(PYTHON) scripts/gen_synthetic.py
 
 # 진행상황 업데이트 루프(mock): 완료율 추이용 상태 시뮬레이션
 progress:
-	PYTHONPATH=src python scripts/simulate_progress.py
+	PYTHONPATH=src $(PYTHON) scripts/simulate_progress.py
 
 # 대시보드용 전체 준비: 적재 + 진행상황
 demo: run-all progress
 
 dashboard:
-	PYTHONPATH=src streamlit run dashboard/app.py
+	PYTHONPATH=src $(PYTHON) -m streamlit run dashboard/app.py
 
 test:
-	PYTHONPATH=src python -m pytest -q
+	PYTHONPATH=src $(PYTHON) -m pytest -q
 
 clean:
 	rm -f data/db/meeting.duckdb data/slack_payload_sample.json

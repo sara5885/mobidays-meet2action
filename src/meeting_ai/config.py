@@ -18,7 +18,7 @@ DB_PATH = DB_DIR / "meeting.duckdb"
 # LLM provider: "mock" | "gemini"
 LLM_PROVIDER = os.getenv("LLM_PROVIDER", "mock")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
-GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.0-flash")
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 
 # 검증/재시도
 MAX_LLM_RETRIES = int(os.getenv("MAX_LLM_RETRIES", "2"))
