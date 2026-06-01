@@ -1,0 +1,8 @@
+duckdb>=1.0.0
+pydantic>=2.6.0
+polars>=1.0.0
+streamlit>=1.33.0
+python-dotenv>=1.0.0
+google-generativeai>=0.7.0
+plotly>=5.20.0
+scikit-learn>=1.4.0

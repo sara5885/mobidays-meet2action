@@ -1,0 +1,7 @@
+__pycache__/
+*.pyc
+.env
+data/db/*.duckdb
+data/slack_payload_sample.json
+.venv/
+.DS_Store
