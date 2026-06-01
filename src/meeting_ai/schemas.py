@@ -61,6 +61,38 @@ class ActionItem(BaseModel):
             raise ValueError("title은 비어 있을 수 없음")
         return v.strip()
 
+    @field_validator("source_quote", mode="before")
+    @classmethod
+    def coerce_quote(cls, v):
+        # LLM이 인용을 리스트로 주는 경우가 있어(특히 소형 로컬 모델) 문자열로 보정.
+        if isinstance(v, list):
+            return " ".join(str(x) for x in v)
+        return "" if v is None else str(v)
+
+    @field_validator("source_seg_ids", mode="before")
+    @classmethod
+    def coerce_seg_ids(cls, v):
+        # "1,2" / [ "1", 2 ] / 단일 int 등 다양한 형태를 int 리스트로 보정.
+        if v is None:
+            return []
+        if isinstance(v, (int, str)):
+            v = str(v).replace(",", " ").split()
+        out = []
+        for x in v:
+            try:
+                out.append(int(x))
+            except (ValueError, TypeError):
+                continue
+        return out
+
+    @field_validator("owner_role", mode="before")
+    @classmethod
+    def empty_owner_to_none(cls, v):
+        if v is None:
+            return None
+        s = str(v).strip()
+        return s or None
+
 
 class ExtractionResult(BaseModel):
     """LLM 1회 호출 결과 컨테이너 (스키마 강제 대상)."""

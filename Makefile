@@ -1,7 +1,8 @@
 # 맥/리눅스에서 python3 기본. 다른 인터프리터 쓰려면: make run PYTHON=python
 PYTHON ?= python3
+PROVIDER ?= ollama
 
-.PHONY: install run run-all synth progress demo dashboard clean test gemini-check stt
+.PHONY: install run run-all synth progress demo dashboard clean test gemini-check stt eval
 
 install:
 	$(PYTHON) -m pip install -r requirements.txt
@@ -34,6 +35,11 @@ dashboard:
 
 test:
 	PYTHONPATH=src $(PYTHON) -m pytest -q
+
+# 추출 품질 평가 (precision/recall/F1) — gold(mock) vs 실제 LLM
+#   make eval PROVIDER=ollama   (또는 gemini)
+eval:
+	LLM_PROVIDER=$(PROVIDER) PYTHONPATH=src $(PYTHON) scripts/eval_extraction.py --provider $(PROVIDER)
 
 clean:
 	rm -f data/db/meeting.duckdb data/slack_payload_sample.json
