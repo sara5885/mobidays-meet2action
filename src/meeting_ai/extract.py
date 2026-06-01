@@ -34,10 +34,14 @@ def _parse_and_validate(raw: str, meeting_id: str) -> ExtractionResult:
 
 
 def extract_from_chunk(
-    chunk: Chunk, valid_seg_ids: set[int], provider: LLMProvider | None = None
+    chunk: Chunk,
+    valid_seg_ids: set[int],
+    provider: LLMProvider | None = None,
+    glossary: dict[str, str] | None = None,
 ) -> list[ActionItem]:
     provider = provider or get_provider()
-    user = build_user_prompt(chunk.text)
+    base = build_user_prompt(chunk.text, glossary)
+    user = base
 
     last_err: Exception | None = None
     for attempt in range(config.MAX_LLM_RETRIES + 1):
@@ -49,7 +53,7 @@ def extract_from_chunk(
             last_err = e
             # 재시도 시 더 강하게 JSON만 요구
             user = (
-                build_user_prompt(chunk.text)
+                base
                 + "\n\n[중요] 이전 출력이 유효한 JSON이 아니었습니다. "
                 "오직 유효한 JSON만, 코드펜스 없이 출력하세요."
             )

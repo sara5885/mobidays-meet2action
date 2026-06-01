@@ -6,7 +6,7 @@ from meeting_ai.pipeline import run
 
 
 def test_run_and_idempotency():
-    sample = config.RAW_DIR / "sample_transcript.json"
+    sample = config.RAW_DIR / "ko_meeting_3speakers.json"
     run(sample)
     con = duckdb.connect(str(config.DB_PATH), read_only=True)
     n1 = con.execute("SELECT COUNT(*) FROM action_items").fetchone()[0]

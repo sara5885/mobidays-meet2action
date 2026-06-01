@@ -5,7 +5,7 @@ install:
 
 # 한 줄 실행: 파이프라인 전체 (transcript -> DuckDB -> 액션아이템)
 run:
-	PYTHONPATH=src python -m meeting_ai.pipeline data/raw/sample_transcript.json
+	PYTHONPATH=src python -m meeting_ai.pipeline data/raw/ko_meeting_3speakers.json
 
 dashboard:
 	PYTHONPATH=src streamlit run dashboard/app.py
