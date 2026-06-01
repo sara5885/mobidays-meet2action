@@ -7,12 +7,41 @@
 from __future__ import annotations
 
 import json
+import re
+import time
 
 from . import config
 from .llm import get_provider
 from .llm.base import LLMProvider
 from .prompts import SYSTEM, build_user_prompt
 from .schemas import ActionItem, Chunk, ExtractionResult
+
+# 무료 티어 분당 요청 제한(429) 대응: 권장 대기시간만큼 쉬고 재시도 (스키마 재시도와 별개)
+RATE_LIMIT_RETRIES = 5
+
+
+def _is_rate_limit(e: Exception) -> bool:
+    s = str(e)
+    return "429" in s or "quota" in s.lower() or "ResourceExhausted" in s
+
+
+def _retry_delay_sec(e: Exception, default: float = 20.0) -> float:
+    m = re.search(r"retry in ([0-9.]+)s", str(e)) or re.search(r"seconds:\s*(\d+)", str(e))
+    return min((float(m.group(1)) + 2) if m else default, 65.0)
+
+
+def _complete_with_backoff(provider: LLMProvider, system: str, user: str) -> str:
+    """rate limit(429) 시 권장 대기 후 재시도. 다른 에러는 그대로 올린다."""
+    for i in range(RATE_LIMIT_RETRIES):
+        try:
+            return provider.complete_json(system, user)
+        except Exception as e:
+            if not _is_rate_limit(e) or i == RATE_LIMIT_RETRIES - 1:
+                raise
+            wait = _retry_delay_sec(e)
+            print(f"[extract] 요청 한도(429) — {wait:.0f}s 대기 후 재시도 ({i+1}/{RATE_LIMIT_RETRIES})")
+            time.sleep(wait)
+    raise RuntimeError("unreachable")
 
 
 def _strip_code_fence(s: str) -> str:
@@ -46,7 +75,7 @@ def extract_from_chunk(
     last_err: Exception | None = None
     for attempt in range(config.MAX_LLM_RETRIES + 1):
         try:
-            raw = provider.complete_json(SYSTEM, user)
+            raw = _complete_with_backoff(provider, SYSTEM, user)
             result = _parse_and_validate(raw, chunk.meeting_id)
             return _postprocess(result.action_items, valid_seg_ids)
         except Exception as e:  # JSON 파싱 실패 / 스키마 위반

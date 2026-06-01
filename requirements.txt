@@ -7,3 +7,9 @@ python-dotenv>=1.0.0
 google-generativeai>=0.7.0
 plotly>=5.20.0
 pytest>=8.0.0
+
+# (선택) 로컬 Whisper STT용 — 용량이 커서 STT 가산점 쓸 때만 설치
+#   pip install openai-whisper && brew install ffmpeg
+# openai-whisper>=20231117
+
+# Ollama provider는 추가 패키지 불필요 (표준 라이브러리 urllib 사용)

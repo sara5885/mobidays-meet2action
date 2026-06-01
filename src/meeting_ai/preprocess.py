@@ -15,7 +15,7 @@ import re
 
 from .schemas import Chunk, Utterance
 
-# 광고/마케팅 약어 사전. LLM 프롬프트 컨텍스트로도 재사용된다(prompts.py).
+# 광고/마케팅 약어 사전. LLM 프롬프트 컨텍스트로도 재사용됨(prompts.py).
 ABBREV: dict[str, str] = {
     "CPM": "노출 1000회당 비용(CPM)",
     "ROAS": "광고 수익률(ROAS)",

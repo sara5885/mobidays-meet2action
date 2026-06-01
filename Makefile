@@ -1,7 +1,7 @@
 # 맥/리눅스에서 python3 기본. 다른 인터프리터 쓰려면: make run PYTHON=python
 PYTHON ?= python3
 
-.PHONY: install run run-all synth progress demo dashboard clean test gemini-check
+.PHONY: install run run-all synth progress demo dashboard clean test gemini-check stt
 
 install:
 	$(PYTHON) -m pip install -r requirements.txt
@@ -37,3 +37,9 @@ test:
 
 clean:
 	rm -f data/db/meeting.duckdb data/slack_payload_sample.json
+
+# 로컬 Whisper STT + (LLM 보조) 화자 정규화 → transcript JSON 생성
+#   기본 샘플:  make stt
+#   다른 파일:  make stt FILE=data/raw/다른회의.mp3
+stt:
+	PYTHONPATH=src $(PYTHON) scripts/run_local_stt.py $(FILE)

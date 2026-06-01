@@ -111,6 +111,8 @@ def upsert_meeting(con, meta: dict) -> None:
 
 def upsert_utterances(con, meeting_id: str, items: list[Utterance]) -> None:
     _replace(con, "utterances", meeting_id)
+    if not items:
+        return
     con.executemany(
         "INSERT INTO utterances VALUES (?, ?, ?, ?, ?, ?, ?)",
         [[u.meeting_id, u.seg_id, u.speaker_code, u.speaker_role,
@@ -120,6 +122,8 @@ def upsert_utterances(con, meeting_id: str, items: list[Utterance]) -> None:
 
 def upsert_chunks(con, meeting_id: str, items: list[Chunk]) -> None:
     _replace(con, "chunks", meeting_id)
+    if not items:
+        return
     con.executemany(
         "INSERT INTO chunks VALUES (?, ?, ?, ?)",
         [[c.meeting_id, c.chunk_id, ",".join(map(str, c.seg_ids)), c.text]
@@ -140,9 +144,10 @@ def upsert_action_items(con, meeting_id: str, items: list[ActionItem]) -> None:
             a.meeting_id, idx, key, a.title, a.owner_role, a.due,
             a.confidence, ",".join(map(str, a.source_seg_ids)), a.source_quote,
         ])
-    con.executemany(
-        "INSERT INTO action_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows
-    )
+    if rows:
+        con.executemany(
+            "INSERT INTO action_items VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)", rows
+        )
     # 신규 액션아이템만 상태행 생성 (기존 사람 수정분은 건드리지 않음 → 보존)
     for key, init_status in keys:
         exists = con.execute(
