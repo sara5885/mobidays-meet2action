@@ -69,6 +69,21 @@ def run(transcript_path: str | Path) -> dict:
     return {"meta": meta, "n_action_items": len(all_items)}
 
 
+def run_all() -> None:
+    """data/raw 의 모든 회의 transcript를 적재 (sample 제외).
+    멱등성 덕분에 반복 실행해도 안전하다."""
+    files = sorted(p for p in config.RAW_DIR.glob("*.json")
+                   if p.stem != "sample_transcript")
+    if not files:
+        print("data/raw 에 transcript JSON이 없습니다.")
+        return
+    for f in files:
+        run(f)
+
+
 if __name__ == "__main__":
-    path = sys.argv[1] if len(sys.argv) > 1 else str(config.ROOT / DEFAULT_INPUT)
-    run(path)
+    arg = sys.argv[1] if len(sys.argv) > 1 else None
+    if arg in (None, "--all", "all"):
+        run_all() if arg else run(str(config.ROOT / DEFAULT_INPUT))
+    else:
+        run(arg)

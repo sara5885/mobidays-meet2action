@@ -13,19 +13,32 @@ make install            # 또는: pip install -r requirements.txt
 cp .env.example .env
 #   실제 Gemini 호출 시 .env 에서 LLM_PROVIDER=gemini, GEMINI_API_KEY=... 설정
 
-# 3. 파이프라인 한 줄 실행 (transcript → DuckDB 적재 → 액션아이템)
-make run
+# 3. 파이프라인 실행 (transcript → DuckDB 적재 → 액션아이템)
+make run        # 제공된 실데이터 1건 적재
+make run-all    # 실데이터 + 합성 회의 전체 적재
+make demo       # run-all + 진행상황 시뮬레이션 (대시보드용 권장)
 
-# 4. 대시보드
+# 4. 대시보드 (먼저 make demo 권장)
 make dashboard          # streamlit run dashboard/app.py
 
 # 테스트 (멱등성·스키마 검증)
 make test
 ```
 
-> **데이터 적재 절차**: `make run` 이 `data/raw/sample_transcript.json` 을 읽어
+> **데이터 적재 절차**: `make run` 이 `data/raw/ko_meeting_3speakers.json`(제공 실데이터)을 읽어
 > 정제 → 청크 → DuckDB(`data/db/meeting.duckdb`) 적재 → 액션아이템 추출까지 수행합니다.
-> 다른 회의는 `PYTHONPATH=src python -m meeting_ai.pipeline <경로>` 로 적재합니다.
+> 대시보드의 추이·키워드 위젯은 회의가 여러 건이어야 의미가 있어, `make run-all` 로
+> 합성 회의(`make synth` 로 생성)까지 함께 적재합니다.
+> 다른 회의는 `PYTHONPATH=src python -m meeting_ai.pipeline <경로>` 로 개별 적재합니다.
+
+## 대시보드 위젯 (3.4)
+
+`make run-all` 후 `make dashboard` 로 실행. "의사결정 흐름"으로 구성:
+
+1. **주차별 회의·액션아이템 추이** — 워크로드가 몰리는 주 파악 → 리소스 사전 배분
+2. **담당자별 미완료 Top N** — 누가 병목인가 → 업무 재분배
+3. **반복 이슈 키워드(BoW)** — 여러 회의에 반복 등장하는 주제(예: 전환 추적/픽셀) → 근본 원인 과제 식별
+4. **confidence 분포 + 낮은 항목 드릴다운** — 낮은 신뢰도 항목만 사람이 검수
 
 ## 아키텍처 및 데이터 흐름
 
@@ -72,15 +85,23 @@ ActionItem[] ──► DuckDB (action_items)            [멱등 적재]
 
 ## 가정 사항
 
-- **제공 transcript의 정확한 필드명 미확정** → loader가 흔한 키(`segments/utterances`,
-  `speaker/spk` 등)를 모두 흡수하도록 방어적 파싱. 실데이터 수령 후 키만 맞추면 됩니다.
+- **transcript 포맷**: loader가 두 포맷을 모두 흡수(방어적 파싱) — 제공 실데이터
+  (`speaker`=이름, `role` 내장, 타임스탬프 없음, `speakers` 리스트)와 일반 STT/diarization
+  포맷(`speakers={code:role}`, 타임스탬프). Whisper 출력으로 교체해도 동일 로더로 처리됩니다.
+- **합성 데이터**: 제공된 실제 회의는 `nova-2026-05-28` 1건뿐입니다. 대시보드의 추이/반복
+  키워드 위젯이 의미를 가지려면 여러 회의가 필요해, `scripts/gen_synthetic.py` 로 동일 구조의
+  가상 회의 3건(다른 주차·광고주, '픽셀/전환 추적' 이슈 반복)을 생성해 함께 적재합니다.
 - **외부 API 금지 제약**: Gemini는 외부 API이므로, 본 PoC는 *가상 광고주(노바드림)* 시나리오
   검증에만 사용합니다. 실서비스에선 사내 LLM/온프레미스로 대체하는 것을 전제로 합니다.
   기본값(`LLM_PROVIDER=mock`)은 외부 전송 없이 전체 흐름을 시연합니다.
+- **이슈 키워드**: 형태소 분석기 의존을 피하려 정규식 토큰화+조사 제거+불용어 기반 BoW로 구현.
+  데이터가 누적되면 임베딩 클러스터링으로 고도화 가능(향후 확장).
 - 음성(STT)은 동봉 transcript JSON으로 대체. 로컬 Whisper 적용은 가산점 항목으로 별도 추가 예정.
 
 ## 현재 상태
 
-✅ 1단계(walking skeleton): transcript → DuckDB → mock 추출 → 대시보드 end-to-end 동작
+✅ 핵심 파이프라인: transcript → 정제 → DuckDB 멱등 적재 → mock 추출(스키마 강제/검증/재시도/환각필터) → 대시보드
+✅ 대시보드 위젯 4개 (추이 / 담당자별 미완료 / 반복 키워드 / confidence 분포+드릴다운)
+✅ 다회의 적재(`make run-all`), 멱등성·스키마 테스트 통과
 
-⬜ 2단계: 실제 Gemini 호출 / 정제 강화 / 대시보드 위젯 4개 / 기획안·녹화
+⬜ 남은 작업: 실제 Gemini 호출 PoC / 기획안 5p / 대시보드 화면 녹화 / (가산점) Whisper STT·precision-recall

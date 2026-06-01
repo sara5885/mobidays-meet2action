@@ -40,7 +40,7 @@ def extract_from_chunk(
     glossary: dict[str, str] | None = None,
 ) -> list[ActionItem]:
     provider = provider or get_provider()
-    base = build_user_prompt(chunk.text, glossary)
+    base = build_user_prompt(chunk.text, glossary, chunk.meeting_id)
     user = base
 
     last_err: Exception | None = None

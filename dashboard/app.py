@@ -1,6 +1,12 @@
-"""Streamlit 대시보드 (1단계: 액션아이템 표 + confidence). 2단계에서 위젯 4개로 확장.
+"""회의 액션아이템 분석 대시보드 (Streamlit, custom-styled).
 
-실행: streamlit run dashboard/app.py
+구성 원칙: 단순 차트 나열이 아니라 '의사결정 흐름'.
+  ① 추이      → 워크로드/완료율 추세 파악
+  ② 미완료 Top → 누가 병목인가, 업무 재분배
+  ③ 반복 키워드 → 근본 원인 과제 식별
+  ④ confidence → 낮은 항목만 사람이 검수
+
+실행: streamlit run dashboard/app.py   (먼저 `make demo` 로 데이터 적재 + 진행상황)
 """
 from __future__ import annotations
 
@@ -8,32 +14,234 @@ import sys
 from pathlib import Path
 
 import duckdb
+import plotly.graph_objects as go
+import polars as pl
 import streamlit as st
 
-# src 경로 추가
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "src"))
 from meeting_ai import config  # noqa: E402
+from meeting_ai.keywords import top_keywords  # noqa: E402
 
-st.set_page_config(page_title="회의 액션아이템 대시보드", layout="wide")
-st.title("📋 회의록 · 액션아이템 대시보드")
+st.set_page_config(page_title="회의 분석 대시보드", layout="wide", page_icon="📋")
+
+# ─────────────────────────── 스타일 ───────────────────────────
+st.markdown("""
+<style>
+  .block-container {padding-top: 2rem; max-width: 1200px;}
+  .kpi {background:#fff; border:1px solid #ececf0; border-radius:14px;
+        padding:16px 18px;}
+  .kpi .label {font-size:13px; color:#6b7280;}
+  .kpi .value {font-size:30px; font-weight:700; color:#111827; line-height:1.2;}
+  .kpi .delta-up {font-size:12px; color:#16a34a;}
+  .kpi .delta-down {font-size:12px; color:#dc2626;}
+  .kpi .delta-flat {font-size:12px; color:#9ca3af;}
+  .card {background:#fff; border:1px solid #ececf0; border-radius:16px;
+         padding:20px 22px; margin-bottom:8px;}
+  .card h3 {margin:0 0 2px 0; font-size:17px; color:#111827;}
+  .card .sub {color:#6b7280; font-size:13px; margin-bottom:10px;}
+  .chip {display:inline-block; padding:7px 13px; margin:4px; border-radius:9px;
+         font-size:14px; font-weight:600;}
+  .chip-hi {background:#fdecec; color:#c0392b;}
+  .chip-mid {background:#eaf1fb; color:#2563eb;}
+  .chip-lo {background:#eef6ee; color:#3b8a3b;}
+  .quote {background:#fafafa; border:1px solid #eee; border-radius:8px;
+          padding:8px 12px; margin:6px 0; font-size:13px; color:#374151;
+          display:flex; justify-content:space-between; gap:10px;}
+  .conf-tag {color:#c0392b; font-weight:600; white-space:nowrap;}
+</style>
+""", unsafe_allow_html=True)
 
 if not config.DB_PATH.exists():
-    st.warning("DB가 없습니다. 먼저 `make run` 으로 파이프라인을 실행하세요.")
+    st.warning("DB가 없습니다. 터미널에서 `make demo` 를 먼저 실행하세요.")
     st.stop()
 
 con = duckdb.connect(str(config.DB_PATH), read_only=True)
-items = con.execute("""
-    SELECT meeting_id, title, owner_role, due, status, confidence, source_quote
-    FROM action_items ORDER BY confidence DESC
-""").pl()
+meetings = con.execute("SELECT * FROM meetings ORDER BY date").pl()
+items = con.execute("SELECT * FROM action_items").pl()
+utt = con.execute("SELECT meeting_id, text FROM utterances").pl()
+con_total = con.execute("SELECT COUNT(*) FROM action_items").fetchone()[0]
 
-st.subheader("액션아이템")
-st.dataframe(items, use_container_width=True)
+if items.height == 0:
+    st.warning("적재된 액션아이템이 없습니다. `make demo` 를 실행하세요.")
+    st.stop()
 
-c1, c2 = st.columns(2)
-c1.metric("총 액션아이템", len(items))
-if len(items):
-    c2.metric("평균 confidence", f"{items['confidence'].mean():.2f}")
+adv_map = dict(zip(meetings["meeting_id"].to_list(), meetings["advertiser"].to_list()))
+items = items.with_columns(
+    pl.col("meeting_id").replace_strict(adv_map, default="(미상)").alias("advertiser")
+)
 
-st.caption("1단계 뼈대 — 2단계에서 추이/담당자별 미완료/이슈 키워드/confidence 분포 위젯 추가 예정")
+# 헤더 + 광고주 필터
+hl, hr = st.columns([3, 1])
+hl.markdown("### 📋 회의 분석 대시보드")
+hl.caption("모비데이즈 AI Lab · 회의 transcript → 액션아이템 자동 추출")
+advertisers = ["(전체)"] + sorted([a for a in meetings["advertiser"].unique().to_list() if a])
+sel_adv = hr.selectbox("광고주", advertisers, label_visibility="collapsed")
+
+m_view = meetings if sel_adv == "(전체)" else meetings.filter(pl.col("advertiser") == sel_adv)
+mids = m_view["meeting_id"].to_list()
+i_view = items.filter(pl.col("meeting_id").is_in(mids))
+u_view = utt.filter(pl.col("meeting_id").is_in(mids))
+
+# ─────────────────── 주차별 집계 (추이 + 델타) ───────────────────
+mi = (m_view.join(i_view.group_by("meeting_id").agg(pl.len().alias("n_items")),
+                  on="meeting_id", how="left")
+      .with_columns(pl.col("n_items").fill_null(0)))
+done_by_m = (i_view.filter(pl.col("status") == "done")
+             .group_by("meeting_id").agg(pl.len().alias("n_done")))
+mi = mi.join(done_by_m, on="meeting_id", how="left").with_columns(pl.col("n_done").fill_null(0))
+has_dates = mi.height and mi["date"].null_count() < mi.height
+if has_dates:
+    mi = mi.with_columns(pl.col("date").cast(pl.Date).dt.strftime("%Y-W%V").alias("week"))
+    wk = (mi.group_by("week").agg(
+            pl.len().alias("meetings"),
+            pl.col("n_items").sum().alias("items"),
+            pl.col("n_done").sum().alias("done"))
+          .sort("week")
+          .with_columns((100 * pl.col("done") / pl.col("items")).round(0).alias("rate")))
+else:
+    wk = pl.DataFrame()
+
+
+def _delta_html(cur, prev, unit=""):
+    if prev is None:
+        return '<span class="delta-flat">—</span>'
+    d = cur - prev
+    if d > 0:
+        return f'<span class="delta-up">▲ {d}{unit} 지난주 대비</span>'
+    if d < 0:
+        return f'<span class="delta-down">▼ {abs(d)}{unit} 지난주 대비</span>'
+    return '<span class="delta-flat">— 지난주와 동일</span>'
+
+
+# 최신주 vs 직전주
+last_items = prev_items = None
+if wk.height >= 1:
+    last_items = int(wk["items"][-1])
+    prev_items = int(wk["items"][-2]) if wk.height >= 2 else None
+
+# ─────────────────────────── KPI ───────────────────────────
+open_cnt = i_view.filter(pl.col("status") != "done").height
+low_cnt = i_view.filter(pl.col("confidence") < 0.6).height
+avg_conf = i_view["confidence"].mean()
+
+
+def kpi(col, label, value, delta_html=""):
+    col.markdown(
+        f'<div class="kpi"><div class="label">{label}</div>'
+        f'<div class="value">{value}</div>{delta_html}</div>',
+        unsafe_allow_html=True)
+
+
+k1, k2, k3, k4 = st.columns(4)
+kpi(k1, "회의 수", m_view.height)
+kpi(k2, "신규 액션아이템", i_view.height, _delta_html(last_items, prev_items, "건"))
+kpi(k3, "미완료", open_cnt)
+kpi(k4, "평균 Confidence", f"{avg_conf:.2f}")
+
+st.write("")
+
+# ─────────────────── 위젯 1 + 2 ───────────────────
+c1, c2 = st.columns([1.25, 1])
+
+with c1:
+    st.markdown('<div class="card"><h3>위젯 1 · 주차별 회의 & 액션아이템 추이</h3>'
+                '<div class="sub">막대=발생 건수, 선=완료율 — 누적 추세와 처리율 동시 확인</div>',
+                unsafe_allow_html=True)
+    if wk.height:
+        p = wk.to_pandas()
+        fig = go.Figure()
+        fig.add_bar(x=p["week"], y=p["meetings"], name="회의 수", marker_color="#3b82f6")
+        fig.add_bar(x=p["week"], y=p["items"], name="액션아이템", marker_color="#ef4444")
+        fig.add_trace(go.Scatter(x=p["week"], y=p["rate"], name="완료율(%)",
+                                 yaxis="y2", mode="lines+markers", line_color="#22a06b"))
+        fig.update_layout(
+            barmode="group", height=330, margin=dict(t=10, b=10, l=10, r=10),
+            yaxis=dict(title="건수"),
+            yaxis2=dict(title="완료율(%)", overlaying="y", side="right",
+                        range=[0, 105], showgrid=False),
+            legend=dict(orientation="h", y=1.15), plot_bgcolor="white")
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.info("날짜 정보가 있는 회의가 없어 추이를 표시할 수 없습니다.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with c2:
+    st.markdown('<div class="card"><h3>위젯 2 · 담당자별 미완료 Top N</h3>'
+                '<div class="sub">과부하 담당자 식별 → 업무 재분배 결정</div>',
+                unsafe_allow_html=True)
+    open_items = i_view.filter(pl.col("status") != "done")
+    by_owner = (open_items.with_columns(pl.col("owner_role").fill_null("(담당자 미정)"))
+                .group_by("owner_role").agg(pl.len().alias("cnt"))
+                .sort("cnt", descending=True))
+    if by_owner.height:
+        p = by_owner.to_pandas()
+        colors = ["#dc2626", "#ea580c", "#f59e0b", "#3b82f6", "#22a06b", "#9ca3af"]
+        fig = go.Figure(go.Bar(
+            x=p["cnt"], y=p["owner_role"], orientation="h",
+            marker_color=colors[:len(p)], text=[f"{v}건" for v in p["cnt"]],
+            textposition="outside"))
+        fig.update_layout(height=330, margin=dict(t=10, b=10, l=10, r=20),
+                          yaxis=dict(autorange="reversed"), plot_bgcolor="white",
+                          xaxis=dict(title="미완료 건수"))
+        st.plotly_chart(fig, use_container_width=True)
+    else:
+        st.success("미완료 항목이 없습니다.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+# ─────────────────── 위젯 3 + 4 ───────────────────
+c3, c4 = st.columns([1, 1])
+
+with c3:
+    st.markdown('<div class="card"><h3>위젯 3 · 반복 이슈 키워드 (BoW)</h3>'
+                '<div class="sub">여러 회의에 반복 등장 = 구조적 과제 (빨강=반복 多)</div>',
+                unsafe_allow_html=True)
+    docs = {r["meeting_id"]: r["text"]
+            for r in u_view.group_by("meeting_id").agg(
+                pl.col("text").str.join(" ").alias("text")).iter_rows(named=True)}
+    kws = top_keywords(docs, top_n=12)
+    if kws:
+        chips = []
+        for k in kws:
+            cls = "chip-hi" if k["df"] >= 3 else ("chip-mid" if k["df"] == 2 else "chip-lo")
+            chips.append(f'<span class="chip {cls}">{k["keyword"]}</span>')
+        st.markdown("<div>" + "".join(chips) + "</div>", unsafe_allow_html=True)
+        rep = [k["keyword"] for k in kws if k["df"] >= 3]
+        if rep:
+            st.caption("🔁 반복 이슈: " + ", ".join(rep) + " → 근본 원인 과제 후보")
+    else:
+        st.info("키워드를 추출할 발화가 없습니다.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+with c4:
+    st.markdown('<div class="card"><h3>위젯 4 · LLM Confidence 분포 + 드릴다운</h3>'
+                '<div class="sub">신뢰도 낮은 항목만 사람이 검수 → 검증 비용 최소화</div>',
+                unsafe_allow_html=True)
+    bands = [("0.9 이상", 0.9, 1.01, "#22a06b"), ("0.7–0.9", 0.7, 0.9, "#84cc16"),
+             ("0.5–0.7", 0.5, 0.7, "#f59e0b"), ("0.5 미만", 0.0, 0.5, "#dc2626")]
+    total = i_view.height
+    labels, vals, cols = [], [], []
+    for name, lo, hi, color in bands:
+        c = i_view.filter((pl.col("confidence") >= lo) & (pl.col("confidence") < hi)).height
+        labels.append(name); vals.append(round(100 * c / total)); cols.append(color)
+    fig = go.Figure(go.Bar(x=vals, y=labels, orientation="h", marker_color=cols,
+                           text=[f"{v}%" for v in vals], textposition="outside"))
+    fig.update_layout(height=200, margin=dict(t=6, b=6, l=10, r=20),
+                      yaxis=dict(autorange="reversed"), plot_bgcolor="white",
+                      xaxis=dict(range=[0, 100], title=""))
+    st.plotly_chart(fig, use_container_width=True)
+    low = (i_view.filter(pl.col("confidence") < 0.6)
+           .sort("confidence").select(["source_quote", "confidence"]))
+    st.markdown("**검수 필요 (confidence < 0.6)**", unsafe_allow_html=True)
+    if low.height:
+        for row in low.iter_rows(named=True):
+            q = (row["source_quote"] or "")[:48]
+            st.markdown(f'<div class="quote"><span>"{q}…"</span>'
+                        f'<span class="conf-tag">conf {row["confidence"]:.2f}</span></div>',
+                        unsafe_allow_html=True)
+    else:
+        st.success("검수가 필요한 낮은 신뢰도 항목이 없습니다.")
+    st.markdown("</div>", unsafe_allow_html=True)
+
+st.caption(f"DB: {config.DB_PATH.name} · 회의 {meetings.height}건 · 액션아이템 {con_total}건")
+con.close()

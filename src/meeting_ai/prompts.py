@@ -47,12 +47,18 @@ FEWSHOT = """[예시 입력]
 {"action_items":[{"title":"보고서 정리","owner_role":"퍼포먼스 마케터","due":"금요일","status":"open","confidence":0.9,"source_seg_ids":[1],"source_quote":"그건 제가 챙길게요. 금요일까지 할게요."}]}"""
 
 
-def build_user_prompt(chunk_text: str, glossary: dict[str, str] | None = None) -> str:
+def build_user_prompt(
+    chunk_text: str,
+    glossary: dict[str, str] | None = None,
+    meeting_id: str | None = None,
+) -> str:
     gloss = ""
     if glossary:
         lines = "\n".join(f"- {k}: {v}" for k, v in glossary.items())
         gloss = f"[이 회의에 등장한 약어 용어집]\n{lines}\n\n"
+    header = f"[meeting_id: {meeting_id}]\n" if meeting_id else ""
     return (
+        f"{header}"
         f"{gloss}"
         f"{FEWSHOT}\n\n"
         f"아래 JSON 스키마로 답하세요:\n{OUTPUT_SCHEMA_HINT}\n\n"
