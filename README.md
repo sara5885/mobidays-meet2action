@@ -82,4 +82,5 @@ ActionItem[] ──► DuckDB (action_items)            [멱등 적재]
 ## 현재 상태
 
 ✅ 1단계(walking skeleton): transcript → DuckDB → mock 추출 → 대시보드 end-to-end 동작
+
 ⬜ 2단계: 실제 Gemini 호출 / 정제 강화 / 대시보드 위젯 4개 / 기획안·녹화
