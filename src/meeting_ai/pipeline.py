@@ -23,6 +23,17 @@ from .transcript_loader import load_transcript
 DEFAULT_INPUT = "data/raw/ko_meeting_3speakers.json"
 
 
+def _roster_from_utterances(utterances) -> list[dict]:
+    """발화에서 참석자 명단(역할 기준 중복 제거)을 만든다. 추출 프롬프트의 '담당자 후보'로 사용."""
+    seen, roster = set(), []
+    for u in utterances:
+        key = u.speaker_role or u.speaker_code
+        if key and key not in seen:
+            seen.add(key)
+            roster.append({"name": u.speaker_code, "role": u.speaker_role})
+    return roster
+
+
 def _dedup(items: list[ActionItem]) -> list[ActionItem]:
     """여러 청크에서 같은 액션아이템이 중복 추출될 수 있어 정규화 제목 기준 제거.
     동일 제목이면 confidence 높은 쪽을 남긴다."""
@@ -39,12 +50,13 @@ def run(transcript_path: str | Path) -> dict:
     chunks = to_chunks(utterances)
     valid_seg_ids = {u.seg_id for u in utterances}
     glossary = abbrev_glossary(utterances)
+    roster = _roster_from_utterances(utterances)
 
     provider = get_provider()
     all_items: list[ActionItem] = []
     for ch in chunks:
         all_items.extend(
-            extract_from_chunk(ch, valid_seg_ids, provider, glossary)
+            extract_from_chunk(ch, valid_seg_ids, provider, glossary, roster)
         )
     all_items = _dedup(all_items)
 

@@ -62,12 +62,13 @@ CREATE TABLE IF NOT EXISTS action_items (
 );
 -- 트래킹 레이어 (사람 소유, 재실행에도 보존)
 CREATE TABLE IF NOT EXISTS action_status (
-    action_key   VARCHAR PRIMARY KEY,
-    meeting_id   VARCHAR,
-    status       VARCHAR DEFAULT 'open',
-    delay_reason VARCHAR,
-    updated_at   TIMESTAMP,
-    updated_by   VARCHAR
+    action_key     VARCHAR PRIMARY KEY,
+    meeting_id     VARCHAR,
+    status         VARCHAR DEFAULT 'open',
+    delay_reason   VARCHAR,
+    owner_override VARCHAR,   -- 사람이 직접 고친 담당자 (재실행에도 보존)
+    updated_at     TIMESTAMP,
+    updated_by     VARCHAR
 );
 CREATE SEQUENCE IF NOT EXISTS seq_status_history START 1;
 CREATE TABLE IF NOT EXISTS status_history (
@@ -92,6 +93,8 @@ def make_action_key(meeting_id: str, title: str) -> str:
 def connect() -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(str(config.DB_PATH))
     con.execute(SCHEMA)
+    # 기존 DB 호환: 컬럼이 없으면 추가 (스키마 진화)
+    con.execute("ALTER TABLE action_status ADD COLUMN IF NOT EXISTS owner_override VARCHAR")
     return con
 
 
@@ -159,23 +162,38 @@ def upsert_action_items(con, meeting_id: str, items: list[ActionItem]) -> None:
                 [key, meeting_id, init_status])
 
 
+_KEEP = object()  # owner 인자 미지정 표시 (None=담당자 비우기와 구분)
+
+
 def update_status(con, action_key: str, new_status: str,
-                  reason: str | None = None, by: str = "dashboard") -> None:
-    """상태 변경 + 이력 기록. blocked일 때만 delay_reason 저장."""
+                  reason: str | None = None, owner=_KEEP, by: str = "dashboard") -> None:
+    """상태 변경 + (선택)담당자 override + 이력 기록. blocked일 때만 delay_reason 저장.
+
+    owner: 미지정(_KEEP)이면 담당자 유지, 문자열이면 그 값으로 덮어씀, ''/None이면 AI값 사용으로 되돌림.
+    """
     if new_status not in VALID_STATUSES:
         raise ValueError(f"허용되지 않는 상태: {new_status}")
     row = con.execute(
         "SELECT status FROM action_status WHERE action_key = ?", [action_key]).fetchone()
     old = row[0] if row else None
     reason = reason if new_status == "blocked" else None
+    owner_norm = None if (owner in (None, "")) else str(owner).strip() if owner is not _KEEP else _KEEP
+
     if row:
-        con.execute(
-            "UPDATE action_status SET status=?, delay_reason=?, updated_at=now(), updated_by=?"
-            " WHERE action_key=?", [new_status, reason, by, action_key])
+        if owner_norm is _KEEP:
+            con.execute(
+                "UPDATE action_status SET status=?, delay_reason=?, updated_at=now(), updated_by=?"
+                " WHERE action_key=?", [new_status, reason, by, action_key])
+        else:
+            con.execute(
+                "UPDATE action_status SET status=?, delay_reason=?, owner_override=?,"
+                " updated_at=now(), updated_by=? WHERE action_key=?",
+                [new_status, reason, owner_norm, by, action_key])
     else:
         con.execute(
-            "INSERT INTO action_status (action_key, status, delay_reason, updated_at, updated_by)"
-            " VALUES (?, ?, ?, now(), ?)", [action_key, new_status, reason, by])
+            "INSERT INTO action_status (action_key, status, delay_reason, owner_override, updated_at, updated_by)"
+            " VALUES (?, ?, ?, ?, now(), ?)",
+            [action_key, new_status, reason, (None if owner_norm is _KEEP else owner_norm), by])
     con.execute(
         "INSERT INTO status_history (action_key, old_status, new_status, reason, changed_at, changed_by)"
         " VALUES (?, ?, ?, ?, now(), ?)", [action_key, old, new_status, reason, by])

@@ -51,14 +51,30 @@ def build_user_prompt(
     chunk_text: str,
     glossary: dict[str, str] | None = None,
     meeting_id: str | None = None,
+    roster: list[dict] | None = None,
 ) -> str:
     gloss = ""
     if glossary:
         lines = "\n".join(f"- {k}: {v}" for k, v in glossary.items())
         gloss = f"[이 회의에 등장한 약어 용어집]\n{lines}\n\n"
     header = f"[meeting_id: {meeting_id}]\n" if meeting_id else ""
+
+    # 참석자 명단을 '닫힌 후보 집합'으로 명시 → owner를 이 중에서만 고르게(환각↓·정확도↑)
+    roster_block = ""
+    if roster:
+        names = ", ".join(
+            f"{s.get('role') or s.get('name')}" for s in roster if (s.get('role') or s.get('name'))
+        )
+        if names:
+            roster_block = (
+                f"[회의 참석자(담당자 후보)]\n{names}\n"
+                f"※ owner_role은 반드시 위 후보 중 하나의 역할명으로만 지정하세요. "
+                f"발화로 담당자를 특정할 수 없으면 null. 후보에 없는 이름을 만들지 마세요.\n\n"
+            )
+
     return (
         f"{header}"
+        f"{roster_block}"
         f"{gloss}"
         f"{FEWSHOT}\n\n"
         f"아래 JSON 스키마로 답하세요:\n{OUTPUT_SCHEMA_HINT}\n\n"

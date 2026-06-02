@@ -67,9 +67,10 @@ def extract_from_chunk(
     valid_seg_ids: set[int],
     provider: LLMProvider | None = None,
     glossary: dict[str, str] | None = None,
+    roster: list[dict] | None = None,
 ) -> list[ActionItem]:
     provider = provider or get_provider()
-    base = build_user_prompt(chunk.text, glossary, chunk.meeting_id)
+    base = build_user_prompt(chunk.text, glossary, chunk.meeting_id, roster)
     user = base
 
     last_err: Exception | None = None

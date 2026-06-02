@@ -59,8 +59,11 @@ con = duckdb.connect(str(config.DB_PATH), read_only=True)
 meetings = con.execute("SELECT * FROM meetings ORDER BY date").pl()
 # 추출(action_items) + 트래킹(action_status) 조인 → 상태는 사람이 관리하는 값
 items = con.execute("""
-    SELECT a.meeting_id, a.action_id, a.action_key, a.title, a.owner_role, a.due,
+    SELECT a.meeting_id, a.action_id, a.action_key, a.title, a.due,
            a.confidence, a.source_seg_ids, a.source_quote,
+           -- 담당자: 사람이 고친 값(owner_override) 우선, 없으면 AI 추출값
+           COALESCE(s.owner_override, a.owner_role) AS owner_role,
+           a.owner_role AS owner_ai,
            COALESCE(s.status, 'open') AS status, s.delay_reason
     FROM action_items a
     LEFT JOIN action_status s USING (action_key)
@@ -271,35 +274,45 @@ with st.container(border=True):
     STATUS_KR = {"open": "⬜ 대기", "in_progress": "🔵 진행중",
                  "done": "✅ 완료", "blocked": "⛔ 지연/막힘"}
 
+    st.caption("담당자는 AI 추출값을 기본으로 채우되, 비어 있거나(예: STT로 화자 미상) 틀리면 "
+               "직접 수정할 수 있습니다. 수정값은 보존됩니다.")
     rows = i_view.sort(["meeting_id", "action_id"]).to_dicts()
     with st.form("status_form"):
         edits = {}
+        h1, h2, h3, h4 = st.columns([2.6, 1.4, 1.1, 1.7])
+        h1.caption("액션아이템"); h2.caption("담당자"); h3.caption("상태"); h4.caption("지연 사유")
         for r in rows:
             ck = r["action_key"]
-            col1, col2, col3 = st.columns([3, 1.2, 2])
+            col1, col2, col3, col4 = st.columns([2.6, 1.4, 1.1, 1.7])
             col1.markdown(f"**{r['title']}**<br><span style='color:#888;font-size:12px'>"
-                          f"{r['advertiser']} · {r['owner_role'] or '담당자 미정'} · "
-                          f"기한 {r['due'] or '-'}</span>", unsafe_allow_html=True)
+                          f"{r['advertiser']} · 기한 {r['due'] or '-'}</span>",
+                          unsafe_allow_html=True)
+            owner = col2.text_input("담당자", value=r["owner_role"] or "",
+                                    key=f"ow_{ck}", label_visibility="collapsed",
+                                    placeholder="담당자 미정")
             cur = r["status"] if r["status"] in STATUS_OPTS else "open"
-            new = col2.selectbox("상태", STATUS_OPTS, index=STATUS_OPTS.index(cur),
+            new = col3.selectbox("상태", STATUS_OPTS, index=STATUS_OPTS.index(cur),
                                  format_func=lambda s: STATUS_KR[s],
                                  key=f"st_{ck}", label_visibility="collapsed")
-            reason = col3.text_input("지연 사유", value=r.get("delay_reason") or "",
+            reason = col4.text_input("지연 사유", value=r.get("delay_reason") or "",
                                      key=f"rs_{ck}", label_visibility="collapsed",
                                      placeholder="지연 사유 (blocked일 때)")
-            edits[ck] = (cur, new, reason)
+            edits[ck] = (cur, new, reason, owner, r["owner_role"] or "")
         submitted = st.form_submit_button("💾 변경사항 저장")
 
     if submitted:
         wcon = db.connect()
         n = 0
-        for ck, (cur, new, reason) in edits.items():
+        for ck, (cur, new, reason, owner, cur_owner) in edits.items():
             cur_reason = next((r.get("delay_reason") or "" for r in rows if r["action_key"] == ck), "")
-            if new != cur or (new == "blocked" and reason != cur_reason):
-                db.update_status(wcon, ck, new, reason or None, by="dashboard")
+            changed = (new != cur or (new == "blocked" and reason != cur_reason)
+                       or owner.strip() != cur_owner.strip())
+            if changed:
+                db.update_status(wcon, ck, new, reason or None,
+                                 owner=owner.strip(), by="dashboard")
                 n += 1
         wcon.close()
-        st.success(f"{n}건 상태를 저장했습니다." if n else "변경된 항목이 없습니다.")
+        st.success(f"{n}건 저장했습니다." if n else "변경된 항목이 없습니다.")
         st.rerun()
 
 st.caption(f"DB: {config.DB_PATH.name} · 회의 {meetings.height}건 · 액션아이템 {con_total}건")

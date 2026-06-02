@@ -83,9 +83,15 @@ def evaluate(provider_name: str) -> None:
         chunks = to_chunks(utts)
         valid = {u.seg_id for u in utts}
         gloss = abbrev_glossary(utts)
+        # 참석자 명단(담당자 후보)도 프롬프트에 주입 → owner 정확도 평가에 반영
+        seen, roster = set(), []
+        for u in utts:
+            k = u.speaker_role or u.speaker_code
+            if k and k not in seen:
+                seen.add(k); roster.append({"name": u.speaker_code, "role": u.speaker_role})
         cand: list[ActionItem] = []
         for ch in chunks:
-            cand.extend(extract_from_chunk(ch, valid, provider, gloss))
+            cand.extend(extract_from_chunk(ch, valid, provider, gloss, roster))
 
         gold = FIXTURES[mid]
         matched = _match(gold, cand)
