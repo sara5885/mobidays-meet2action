@@ -71,6 +71,9 @@ def load_transcript(path: str | Path) -> tuple[dict, list[Utterance]]:
             )
         )
 
+    # 참석자 명단(회의 전 알려진 입력) — speakers 필드에서 정규화
+    participants = [{"name": k, "role": v} for k, v in role_map.items()]
+
     meta = {
         "meeting_id": meeting_id,
         "title": raw.get("title", ""),
@@ -78,5 +81,6 @@ def load_transcript(path: str | Path) -> tuple[dict, list[Utterance]]:
         "date": raw.get("date", ""),
         "duration_sec": raw.get("duration_sec", 0),
         "language": raw.get("language", "ko"),
+        "participants": participants,
     }
     return meta, utterances

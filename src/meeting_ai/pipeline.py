@@ -50,7 +50,14 @@ def run(transcript_path: str | Path) -> dict:
     chunks = to_chunks(utterances)
     valid_seg_ids = {u.seg_id for u in utterances}
     glossary = abbrev_glossary(utterances)
-    roster = _roster_from_utterances(utterances)
+
+    con = db.connect()
+    db.upsert_meeting(con, meta)
+    db.upsert_utterances(con, meta["meeting_id"], utterances)
+    db.upsert_chunks(con, meta["meeting_id"], chunks)
+    # 참석자 명단 적재 → roster의 1차 출처. 없으면 발화에서 추출(fallback).
+    db.upsert_participants(con, meta["meeting_id"], meta.get("participants") or [])
+    roster = db.get_participants(con, meta["meeting_id"]) or _roster_from_utterances(utterances)
 
     provider = get_provider()
     all_items: list[ActionItem] = []
@@ -60,10 +67,6 @@ def run(transcript_path: str | Path) -> dict:
         )
     all_items = _dedup(all_items)
 
-    con = db.connect()
-    db.upsert_meeting(con, meta)
-    db.upsert_utterances(con, meta["meeting_id"], utterances)
-    db.upsert_chunks(con, meta["meeting_id"], chunks)
     db.upsert_action_items(con, meta["meeting_id"], all_items)
     con.close()
 

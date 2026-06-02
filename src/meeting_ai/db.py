@@ -47,6 +47,18 @@ CREATE TABLE IF NOT EXISTS chunks (
     text       VARCHAR,
     PRIMARY KEY (meeting_id, chunk_id)
 );
+-- 직원 마스터 (정규화: 직원 정보는 여기 한 곳에만)
+CREATE TABLE IF NOT EXISTS employees (
+    employee_id VARCHAR PRIMARY KEY,
+    name        VARCHAR,
+    role        VARCHAR
+);
+-- 회의 참석자 (회의↔직원 다대다 연결, FK만 저장). 담당자 매핑의 '정답 후보'.
+CREATE TABLE IF NOT EXISTS meeting_participants (
+    meeting_id  VARCHAR,
+    employee_id VARCHAR,
+    PRIMARY KEY (meeting_id, employee_id)
+);
 -- 추출 레이어 (재실행마다 갱신)
 CREATE TABLE IF NOT EXISTS action_items (
     meeting_id    VARCHAR,
@@ -90,11 +102,32 @@ def make_action_key(meeting_id: str, title: str) -> str:
     return h
 
 
+# 직원 마스터 시드 (가상 광고대행사 조직도). 실서비스에선 HR 시스템 연동으로 대체.
+SEED_EMPLOYEES = [
+    ("E01", "지훈", "마케팅 팀장"),
+    ("E02", "수아", "퍼포먼스 마케터"),
+    ("E03", "채린", "콘텐츠 디자이너"),
+    ("E04", "민준", "퍼포먼스 마케터"),
+    ("E05", "서연", "콘텐츠 디자이너"),
+    ("E06", "도윤", "데이터 분석가"),
+    ("E07", "지아", "광고기획자(AE)"),
+    ("E08", "현우", "미디어 플래너"),
+]
+
+
+def seed_employees(con) -> None:
+    for eid, name, role in SEED_EMPLOYEES:
+        con.execute(
+            "INSERT INTO employees VALUES (?, ?, ?) ON CONFLICT (employee_id) DO UPDATE "
+            "SET name=excluded.name, role=excluded.role", [eid, name, role])
+
+
 def connect() -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(str(config.DB_PATH))
     con.execute(SCHEMA)
     # 기존 DB 호환: 컬럼이 없으면 추가 (스키마 진화)
     con.execute("ALTER TABLE action_status ADD COLUMN IF NOT EXISTS owner_override VARCHAR")
+    seed_employees(con)
     return con
 
 
@@ -110,6 +143,46 @@ def upsert_meeting(con, meta: dict) -> None:
         [meta["meeting_id"], meta.get("title", ""), meta.get("advertiser", ""),
          meta.get("date") or None, int(meta.get("duration_sec") or 0)],
     )
+
+
+def _resolve_employee(con, name: str, role: str) -> str:
+    """이름으로 직원 마스터에서 employee_id를 찾고, 없으면 ad-hoc 직원을 생성.
+    (STT로 잡힌 '화자1' 등 명단에 없는 화자도 일관되게 식별)."""
+    row = con.execute("SELECT employee_id FROM employees WHERE name=?", [name]).fetchone()
+    if row:
+        return row[0]
+    eid = "AD" + hashlib.md5(name.encode("utf-8")).hexdigest()[:6]  # 이름 기준 결정적 id
+    con.execute(
+        "INSERT INTO employees VALUES (?, ?, ?) ON CONFLICT (employee_id) DO NOTHING",
+        [eid, name, role or "참석자"])
+    return eid
+
+
+def upsert_participants(con, meeting_id: str, roster: list[dict]) -> None:
+    """회의 참석자를 직원 FK로 연결 적재(멱등). roster: [{"name","role"}]."""
+    _replace(con, "meeting_participants", meeting_id)
+    seen = set()
+    for p in roster or []:
+        if not p:
+            continue
+        name = str(p.get("name") or p.get("role") or "참석자")
+        role = str(p.get("role") or p.get("name") or "참석자")
+        eid = _resolve_employee(con, name, role)
+        if eid in seen:
+            continue
+        seen.add(eid)
+        con.execute(
+            "INSERT INTO meeting_participants VALUES (?, ?) ON CONFLICT DO NOTHING",
+            [meeting_id, eid])
+
+
+def get_participants(con, meeting_id: str) -> list[dict]:
+    """회의↔직원 조인으로 명단 복원(이름·역할)."""
+    rows = con.execute(
+        "SELECT e.name, e.role FROM meeting_participants mp "
+        "JOIN employees e USING (employee_id) WHERE mp.meeting_id=? ORDER BY e.name",
+        [meeting_id]).fetchall()
+    return [{"name": n, "role": r} for n, r in rows]
 
 
 def upsert_utterances(con, meeting_id: str, items: list[Utterance]) -> None:
