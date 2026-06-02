@@ -23,6 +23,7 @@ GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-2.5-flash")
 # Ollama (로컬 LLM, 무료·무제한·온프레미스)
 OLLAMA_HOST = os.getenv("OLLAMA_HOST", "http://localhost:11434")
 OLLAMA_MODEL = os.getenv("OLLAMA_MODEL", "qwen2.5:7b")
+OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "600"))  # CPU 추론은 느려 넉넉히
 
 # 로컬 Whisper STT 모델 크기: tiny|base|small|medium (클수록 정확·느림)
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "small")

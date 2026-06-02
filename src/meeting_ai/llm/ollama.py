@@ -40,7 +40,7 @@ class OllamaProvider(LLMProvider):
         req = urllib.request.Request(
             self._url, data=data, headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=180) as resp:
+            with urllib.request.urlopen(req, timeout=config.OLLAMA_TIMEOUT) as resp:
                 body = json.loads(resp.read().decode("utf-8"))
         except urllib.error.URLError as e:
             raise RuntimeError(
