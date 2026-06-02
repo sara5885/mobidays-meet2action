@@ -48,10 +48,12 @@ CREATE TABLE IF NOT EXISTS chunks (
     PRIMARY KEY (meeting_id, chunk_id)
 );
 -- 직원 마스터 (정규화: 직원 정보는 여기 한 곳에만)
+-- is_adhoc: STT 미상 화자 등 임시로 생성된 행 표시 → 정식 직원과 구분(리포트에서 제외 가능)
 CREATE TABLE IF NOT EXISTS employees (
     employee_id VARCHAR PRIMARY KEY,
     name        VARCHAR,
-    role        VARCHAR
+    role        VARCHAR,
+    is_adhoc    BOOLEAN DEFAULT FALSE
 );
 -- 회의 참석자 (회의↔직원 다대다 연결, FK만 저장). 담당자 매핑의 '정답 후보'.
 CREATE TABLE IF NOT EXISTS meeting_participants (
@@ -118,8 +120,8 @@ SEED_EMPLOYEES = [
 def seed_employees(con) -> None:
     for eid, name, role in SEED_EMPLOYEES:
         con.execute(
-            "INSERT INTO employees VALUES (?, ?, ?) ON CONFLICT (employee_id) DO UPDATE "
-            "SET name=excluded.name, role=excluded.role", [eid, name, role])
+            "INSERT INTO employees VALUES (?, ?, ?, FALSE) ON CONFLICT (employee_id) DO UPDATE "
+            "SET name=excluded.name, role=excluded.role, is_adhoc=FALSE", [eid, name, role])
 
 
 def connect() -> duckdb.DuckDBPyConnection:
@@ -153,8 +155,8 @@ def _resolve_employee(con, name: str, role: str) -> str:
         return row[0]
     eid = "AD" + hashlib.md5(name.encode("utf-8")).hexdigest()[:6]  # 이름 기준 결정적 id
     con.execute(
-        "INSERT INTO employees VALUES (?, ?, ?) ON CONFLICT (employee_id) DO NOTHING",
-        [eid, name, role or "참석자"])
+        "INSERT INTO employees VALUES (?, ?, ?, TRUE) ON CONFLICT (employee_id) DO NOTHING",
+        [eid, name, role or "참석자"])  # is_adhoc=TRUE → 임시 화자로 표시(마스터 오염 방지)
     return eid
 
 

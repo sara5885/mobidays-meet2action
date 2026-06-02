@@ -2,7 +2,7 @@
 PYTHON ?= python3
 PROVIDER ?= ollama
 
-.PHONY: install run run-all synth progress demo dashboard clean test gemini-check stt eval
+.PHONY: install run run-all synth progress demo demo-all dashboard clean test gemini-check stt eval
 
 install:
 	$(PYTHON) -m pip install -r requirements.txt
@@ -27,8 +27,11 @@ synth:
 progress:
 	PYTHONPATH=src $(PYTHON) scripts/simulate_progress.py
 
-# 대시보드용 전체 준비: 적재 + 진행상황
-demo: run-all progress
+# 대시보드용 준비: 제공 실데이터 1건만 적재 + 진행상황 (빠름)
+demo: run progress
+
+# 대시보드 추이/키워드 위젯까지 풍성하게: 합성 회의 포함 전체 적재 (느림 - LLM 호출 多)
+demo-all: run-all progress
 
 dashboard:
 	PYTHONPATH=src $(PYTHON) -m streamlit run dashboard/app.py
