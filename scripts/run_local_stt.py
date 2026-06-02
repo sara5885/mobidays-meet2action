@@ -86,6 +86,8 @@ def main() -> None:
     ap.add_argument("--advertiser", default="", help="광고주명(메타데이터)")
     ap.add_argument("--title", default="", help="회의 제목(메타데이터)")
     ap.add_argument("--speakers", default="", help='참석자 명단 "이름:역할,이름:역할"')
+    ap.add_argument("--raw-only", action="store_true",
+                    help="LLM·화자매핑 없이 순수 Whisper 받아쓰기 원본만 저장(검증용)")
     args = ap.parse_args()
 
     audio = args.audio
@@ -138,6 +140,18 @@ def main() -> None:
         "date": dt.date.today().isoformat(),
         "language": "ko",
     }
+
+    # 순수 Whisper 받아쓰기 원본만 저장 (LLM·mock·정답지 일절 개입 없음)
+    if args.raw_only:
+        raw_out = f"data/stt/{stem}_raw.json"
+        raw_segs = [{"id": i + 1, "start": round(float(s.get("start", i)), 1),
+                     "text": s["text"].strip()} for i, s in enumerate(result["segments"])]
+        _save(raw_out, {**meta, "note": "pure Whisper transcription (no LLM/diarization)",
+                        "segments": raw_segs})
+        print("── Whisper 원본 받아쓰기 (앞 8줄) ──")
+        for s in raw_segs[:8]:
+            print(f"  [{s['start']:.1f}s] {s['text']}")
+        return
 
     if config.LLM_PROVIDER == "mock":
         print("💡 mock 모드 — 화자 매핑 생략, 단일 화자로 저장(시연용).")
