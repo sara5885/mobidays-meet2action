@@ -1,0 +1,28 @@
+flowchart TD
+    A["transcript JSON<br/>(또는 Whisper STT 출력)"] --> B["transcript_loader<br/>→ Utterance[]"]
+    B --> C["preprocess<br/>머뭇거림 제거·약어사전·중복정리"]
+    C --> D["to_chunks<br/>의미 단위 청크"]
+    D --> E["full_text<br/>(청크 합치기)"]
+
+    E --> F["build_summary_prompt()<br/>SUMMARY_SYSTEM + [TASK: summary]<br/>+ JSON 스키마 + 회의 발화"]
+    F --> G["LLM provider.complete_json<br/>mock / Gemini / Ollama"]
+    G -->|"429 rate limit"| G2["권장 시간 대기 후 재시도<br/>(_complete_with_backoff)"]
+    G2 --> G
+    G --> H["코드펜스 제거 + JSON 파싱"]
+    H --> I{"pydantic 검증<br/>MeetingSummary"}
+    I -->|"형식 변형<br/>(list↔str 등)"| I2["타입 보정(coercion)<br/>summary/agenda/decisions"]
+    I2 --> J
+    I -->|"파싱 실패"| R["재시도(MAX_LLM_RETRIES)<br/>→ 소진 시 빈 요약 반환"]
+    R --> J
+    I -->|"성공"| J["MeetingSummary<br/>summary · agenda[] · decisions[]"]
+
+    J --> K["db.upsert_summary<br/>meeting_summary 테이블<br/>(agenda/decisions = JSON, 멱등)"]
+    K --> L["대시보드 get_summary"]
+    L --> M["📄 회의록 상세<br/>① 기본정보 ② 안건 ③ 결정사항<br/>④ 액션아이템 + 원문 대조"]
+
+    subgraph 규칙["요약 프롬프트 핵심 규칙"]
+      X1["agenda = 다룬 주제(명사구)"]
+      X2["decisions = '확정된' 결론만<br/>('일단 두고 봐요'·'잠정' 제외)"]
+      X3["발화에 없는 내용 생성 금지"]
+    end
+    F -.- 규칙
