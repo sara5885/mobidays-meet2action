@@ -61,6 +61,13 @@ CREATE TABLE IF NOT EXISTS meeting_participants (
     employee_id VARCHAR,
     PRIMARY KEY (meeting_id, employee_id)
 );
+-- 회의록 정리 (요약·안건·결정사항). 재실행마다 갱신.
+CREATE TABLE IF NOT EXISTS meeting_summary (
+    meeting_id VARCHAR PRIMARY KEY,
+    summary    VARCHAR,
+    agenda     VARCHAR,   -- JSON 배열 문자열
+    decisions  VARCHAR    -- JSON 배열 문자열
+);
 -- 추출 레이어 (재실행마다 갱신)
 CREATE TABLE IF NOT EXISTS action_items (
     meeting_id    VARCHAR,
@@ -188,6 +195,29 @@ def get_participants(con, meeting_id: str) -> list[dict]:
         "JOIN employees e USING (employee_id) WHERE mp.meeting_id=? ORDER BY e.name",
         [meeting_id]).fetchall()
     return [{"name": n, "role": r} for n, r in rows]
+
+
+def upsert_summary(con, meeting_id: str, summary) -> None:
+    """회의록(요약·안건·결정) 멱등 적재. summary: MeetingSummary."""
+    import json as _json
+    _replace(con, "meeting_summary", meeting_id)
+    con.execute(
+        "INSERT INTO meeting_summary VALUES (?, ?, ?, ?)",
+        [meeting_id, summary.summary,
+         _json.dumps(summary.agenda, ensure_ascii=False),
+         _json.dumps(summary.decisions, ensure_ascii=False)])
+
+
+def get_summary(con, meeting_id: str) -> dict:
+    import json as _json
+    row = con.execute(
+        "SELECT summary, agenda, decisions FROM meeting_summary WHERE meeting_id=?",
+        [meeting_id]).fetchone()
+    if not row:
+        return {"summary": "", "agenda": [], "decisions": []}
+    return {"summary": row[0] or "",
+            "agenda": _json.loads(row[1] or "[]"),
+            "decisions": _json.loads(row[2] or "[]")}
 
 
 def upsert_utterances(con, meeting_id: str, items: list[Utterance]) -> None:

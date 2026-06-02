@@ -102,5 +102,15 @@ class MockProvider(LLMProvider):
     def complete_json(self, system: str, user: str) -> str:
         m = _MID_RE.search(user)
         meeting_id = m.group(1).strip() if m else ""
+        # 회의록 정리 요청이면 요약 형태로 응답 (결정사항은 해당 회의 액션아이템 제목 활용)
+        if "[TASK: summary]" in user:
+            items = FIXTURES.get(meeting_id, [])
+            decisions = [it["title"] for it in items
+                         if it.get("owner_role") and it.get("confidence", 0) >= 0.6][:5]
+            return json.dumps({
+                "summary": "광고 캠페인 사전 정렬 회의 (mock 요약).",
+                "agenda": ["지난 성과 리뷰", "매체/예산 배분", "크리에이티브·카피"],
+                "decisions": decisions or ["주요 결정사항은 액션아이템 참조"],
+            }, ensure_ascii=False)
         items = FIXTURES.get(meeting_id, [])
         return json.dumps({"action_items": items}, ensure_ascii=False)

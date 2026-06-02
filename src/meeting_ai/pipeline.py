@@ -13,7 +13,7 @@ import sys
 from pathlib import Path
 
 from . import config, db
-from .extract import extract_from_chunk
+from .extract import extract_from_chunk, summarize_meeting
 from .llm import get_provider
 from .preprocess import abbrev_glossary, to_chunks
 from .schemas import ActionItem
@@ -67,7 +67,12 @@ def run(transcript_path: str | Path) -> dict:
         )
     all_items = _dedup(all_items)
 
+    # 회의록 정리(요약·안건·결정사항) — 전체 발화 기준 1회
+    full_text = "\n".join(ch.text for ch in chunks)
+    summary = summarize_meeting(full_text, meta["meeting_id"], provider)
+
     db.upsert_action_items(con, meta["meeting_id"], all_items)
+    db.upsert_summary(con, meta["meeting_id"], summary)
     con.close()
 
     # Slack 페이로드 샘플 저장

@@ -14,7 +14,7 @@ from . import config
 from .llm import get_provider
 from .llm.base import LLMProvider
 from .prompts import SYSTEM, build_user_prompt
-from .schemas import ActionItem, Chunk, ExtractionResult
+from .schemas import ActionItem, Chunk, ExtractionResult, MeetingSummary
 
 # 무료 티어 분당 요청 제한(429) 대응: 권장 대기시간만큼 쉬고 재시도 (스키마 재시도와 별개)
 RATE_LIMIT_RETRIES = 5
@@ -60,6 +60,22 @@ def _parse_and_validate(raw: str, meeting_id: str) -> ExtractionResult:
     for it in data.get("action_items", []):
         it["meeting_id"] = meeting_id
     return ExtractionResult(**data)
+
+
+def summarize_meeting(chunk_text: str, meeting_id: str,
+                      provider: LLMProvider | None = None) -> MeetingSummary:
+    """회의 발화 → 회의록(요약·안건·결정사항). 실패 시 빈 요약 반환(파이프라인 안 죽음)."""
+    from .prompts import SUMMARY_SYSTEM, build_summary_prompt
+    provider = provider or get_provider()
+    user = build_summary_prompt(chunk_text, meeting_id)
+    for _ in range(config.MAX_LLM_RETRIES + 1):
+        try:
+            raw = _complete_with_backoff(provider, SUMMARY_SYSTEM, user)
+            return MeetingSummary(**json.loads(_strip_code_fence(raw)))
+        except Exception as e:
+            last = e
+    print(f"[summarize] 회의록 정리 실패: {last}")
+    return MeetingSummary()
 
 
 def extract_from_chunk(

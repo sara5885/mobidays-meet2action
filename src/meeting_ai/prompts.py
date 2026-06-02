@@ -47,6 +47,27 @@ FEWSHOT = """[예시 입력]
 {"action_items":[{"title":"보고서 정리","owner_role":"퍼포먼스 마케터","due":"금요일","status":"open","confidence":0.9,"source_seg_ids":[1],"source_quote":"그건 제가 챙길게요. 금요일까지 할게요."}]}"""
 
 
+SUMMARY_SYSTEM = """당신은 한국 광고대행사의 회의록을 정리하는 전문 어시스턴트입니다.
+회의 발화에서 '안건(다룬 주제)'과 '결정사항(최종 합의된 결론)'을 구분해 뽑습니다.
+
+규칙:
+- agenda: 이번 회의에서 다룬 주요 주제(논의 대상). 명사구로 간결하게.
+- decisions: 논의 끝에 '확정된' 결론만. 흐릿하게 보류된 것('일단 두고 봐요', '잠정')은 결정에서 제외.
+- summary: 회의 전체를 1~2문장으로.
+- 발화에 없는 내용을 지어내지 말 것. 반드시 JSON으로만 답할 것."""
+
+SUMMARY_SCHEMA = '{"summary": "string", "agenda": ["string"], "decisions": ["string"]}'
+
+
+def build_summary_prompt(chunk_text: str, meeting_id: str | None = None) -> str:
+    header = f"[meeting_id: {meeting_id}]\n[TASK: summary]\n" if meeting_id else "[TASK: summary]\n"
+    return (
+        f"{header}"
+        f"아래 JSON 스키마로만 답하세요:\n{SUMMARY_SCHEMA}\n\n"
+        f"[회의 발화]\n{chunk_text}\n\n[출력 JSON]"
+    )
+
+
 def build_user_prompt(
     chunk_text: str,
     glossary: dict[str, str] | None = None,

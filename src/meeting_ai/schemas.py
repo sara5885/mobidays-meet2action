@@ -97,3 +97,26 @@ class ActionItem(BaseModel):
 class ExtractionResult(BaseModel):
     """LLM 1회 호출 결과 컨테이너 (스키마 강제 대상)."""
     action_items: list[ActionItem] = Field(default_factory=list)
+
+
+class MeetingSummary(BaseModel):
+    """회의록 정리 결과: 한 줄 요약 + 안건 + 결정사항."""
+    summary: str = Field("", description="회의 한 줄 요약")
+    agenda: list[str] = Field(default_factory=list, description="다룬 주요 안건")
+    decisions: list[str] = Field(default_factory=list, description="최종 합의된 결정사항")
+
+    @field_validator("summary", mode="before")
+    @classmethod
+    def _coerce_summary(cls, v):
+        if isinstance(v, list):
+            return " ".join(str(x) for x in v)
+        return "" if v is None else str(v)
+
+    @field_validator("agenda", "decisions", mode="before")
+    @classmethod
+    def _coerce_list(cls, v):
+        if v is None:
+            return []
+        if isinstance(v, str):
+            return [v] if v.strip() else []
+        return [str(x).strip() for x in v if str(x).strip()]

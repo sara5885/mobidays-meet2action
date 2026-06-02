@@ -68,8 +68,16 @@ items = con.execute("""
     FROM action_items a
     LEFT JOIN action_status s USING (action_key)
 """).pl()
-utt = con.execute("SELECT meeting_id, text FROM utterances").pl()
+utt = con.execute(
+    "SELECT meeting_id, seg_id, speaker_role, text FROM utterances ORDER BY meeting_id, seg_id").pl()
 con_total = con.execute("SELECT COUNT(*) FROM action_items").fetchone()[0]
+# 회의록(요약·안건·결정) + 참석자 명단
+summaries = {}
+for mid in meetings["meeting_id"].to_list():
+    summaries[mid] = db.get_summary(con, mid)
+participants = {}
+for mid in meetings["meeting_id"].to_list():
+    participants[mid] = db.get_participants(con, mid)
 con.close()
 
 if items.height == 0:
@@ -157,6 +165,83 @@ kpi(k1, "회의 수", m_view.height)
 kpi(k2, "신규 액션아이템", i_view.height, _delta(last_items, prev_items, "건"))
 kpi(k3, "미완료", open_cnt)
 kpi(k4, "평균 Confidence", f"{avg_conf:.2f}")
+st.write("")
+
+# ── 📄 회의록 (목록 → 클릭 → 상세). 가독성 위해 기본은 목록만 표시 ──
+if "sel_meeting" not in st.session_state:
+    st.session_state.sel_meeting = None
+
+# 회의별 액션아이템 집계 (목록 카드용)
+_cnt = (i_view.group_by("meeting_id")
+        .agg(pl.len().alias("n_items"),
+             (pl.col("status") != "done").sum().alias("n_open")))
+_cnt_map = {r["meeting_id"]: (r["n_items"], r["n_open"]) for r in _cnt.iter_rows(named=True)}
+
+with st.container(border=True):
+    st.markdown('<div class="wtitle">📄 회의록 (자동 정리)</div>'
+                '<div class="wsub">회의를 클릭하면 안건·결정사항·액션아이템과 원문을 펼쳐봅니다.</div>',
+                unsafe_allow_html=True)
+
+    sel = st.session_state.sel_meeting
+    valid_ids = set(m_view["meeting_id"].to_list())
+    if sel not in valid_ids:
+        sel = None
+
+    if sel is None:
+        # ── 목록 뷰 ──
+        for r in m_view.sort("date", descending=True).iter_rows(named=True):
+            mid = r["meeting_id"]
+            n_items, n_open = _cnt_map.get(mid, (0, 0))
+            c1_, c2_, c3_ = st.columns([5, 2, 1.2])
+            c1_.markdown(f"**{r['title'] or mid}**　"
+                         f"<span style='color:#888;font-size:12px'>{r['advertiser'] or '—'} · {r['date']}</span>",
+                         unsafe_allow_html=True)
+            c2_.markdown(f"<span style='color:#666;font-size:13px'>액션 {n_items} · 미완료 {n_open}</span>",
+                         unsafe_allow_html=True)
+            if c3_.button("열기 →", key=f"open_{mid}"):
+                st.session_state.sel_meeting = mid
+                st.rerun()
+    else:
+        # ── 상세 뷰 (회의록 페이지) ──
+        if st.button("← 회의 목록"):
+            st.session_state.sel_meeting = None
+            st.rerun()
+        mrow = m_view.filter(pl.col("meeting_id") == sel).to_dicts()[0]
+        summ = summaries.get(sel, {"summary": "", "agenda": [], "decisions": []})
+        parts = participants.get(sel, [])
+        names = ", ".join(f'{p["name"]}({p["role"]})' for p in parts) or "—"
+
+        st.markdown(f"### {mrow['title'] or sel}")
+        st.markdown(f"**① 기본 정보** · 일시 {mrow['date']} · 광고주 {mrow['advertiser'] or '—'}  \n"
+                    f"참석자: {names}")
+        if summ["summary"]:
+            st.caption("요약: " + summ["summary"])
+
+        cL, cR = st.columns(2)
+        with cL:
+            st.markdown("**② 안건 (Agenda)**")
+            st.markdown("\n".join(f"- {a}" for a in summ["agenda"]) if summ["agenda"]
+                        else "_추출된 안건 없음_")
+        with cR:
+            st.markdown("**③ 결정 사항 (Decisions)**")
+            st.markdown("\n".join(f"- {d}" for d in summ["decisions"]) if summ["decisions"]
+                        else "_확정된 결정사항 없음 (흐릿한 논의는 제외)_")
+
+        st.markdown("**④ 액션 아이템 (담당자 / 기한 / 할 일)**")
+        ai = i_view.filter(pl.col("meeting_id") == sel).select(
+            ["owner_role", "due", "title", "status", "confidence"]).rename(
+            {"owner_role": "담당자", "due": "기한", "title": "할 일",
+             "status": "상태", "confidence": "신뢰도"})
+        if ai.height:
+            st.dataframe(ai.to_pandas(), use_container_width=True, hide_index=True)
+        else:
+            st.caption("액션아이템 없음")
+
+        with st.expander("🗒️ 원문 transcript 보기 (추출 검증용)"):
+            tu = utt.filter(pl.col("meeting_id") == sel).sort("seg_id")
+            for r in tu.iter_rows(named=True):
+                st.markdown(f"<span style='color:#888'>#{r['seg_id']} "
+                            f"[{r['speaker_role']}]</span> {r['text']}", unsafe_allow_html=True)
 st.write("")
 
 # ── 위젯 1 + 2 ──
