@@ -27,6 +27,8 @@ OLLAMA_TIMEOUT = int(os.getenv("OLLAMA_TIMEOUT", "600"))  # CPU 추론은 느려
 
 # 로컬 Whisper STT 모델 크기: tiny|base|small|medium (클수록 정확·느림)
 WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")
+# 화자 매핑 전 '같은 화자 인접 조각 병합'의 최대 시간 간격(초). 클수록 많이 합침.
+MERGE_MAX_GAP = float(os.getenv("MERGE_MAX_GAP", "1.5"))
 
 # 검증/재시도
 MAX_LLM_RETRIES = int(os.getenv("MAX_LLM_RETRIES", "2"))

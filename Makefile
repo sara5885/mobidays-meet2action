@@ -2,7 +2,7 @@
 PYTHON ?= python3
 PROVIDER ?= ollama
 
-.PHONY: install run run-all synth progress demo demo-all dashboard clean test gemini-check stt eval
+.PHONY: install run run-all synth progress demo demo-all dashboard clean test gemini-check stt eval eval-diar
 
 install:
 	$(PYTHON) -m pip install -r requirements.txt
@@ -43,6 +43,10 @@ test:
 #   make eval PROVIDER=ollama   (또는 gemini)
 eval:
 	LLM_PROVIDER=$(PROVIDER) PYTHONPATH=src $(PYTHON) scripts/eval_extraction.py --provider $(PROVIDER)
+
+# 화자 매핑 정확도 평가 (문장 단위 vs 조각 단위)
+eval-diar:
+	LLM_PROVIDER=$(PROVIDER) PYTHONPATH=src $(PYTHON) scripts/eval_diarization.py --provider $(PROVIDER)
 
 clean:
 	rm -f data/db/meeting.duckdb data/slack_payload_sample.json

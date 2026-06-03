@@ -197,31 +197,31 @@ def main() -> None:
         _save(out, {**meta, "speakers": [{"name": "화자1", "role": "참석자"}], "segments": segs})
         return
 
-    print(f"▶ 3/3 화자 정규화 (provider={config.LLM_PROVIDER})…")
+    print(f"▶ 3/3 화자 매핑 (provider={config.LLM_PROVIDER})…")
     from meeting_ai.llm import get_provider
+    from meeting_ai.diarize import merge_segments, diarize_texts
     provider = get_provider()
-    texts = [s["text"].strip() for s in result["segments"]]
-    numbered = "\n".join(f"#{i+1} {t}" for i, t in enumerate(texts))
     role_by_name = {s["name"]: s["role"] for s in (hint or [])}
     try:
-        raw = _complete_with_backoff(provider, SYSTEM, _diar_prompt(numbered, hint))
-        data = json.loads(_strip_code_fence(raw))
-        # id→speaker 매핑만 받아서 우리 텍스트와 합친다 (원문 보존)
-        spk_by_id = {int(a["id"]): str(a.get("speaker", "")).strip()
-                     for a in data.get("assignments", []) if "id" in a}
+        # 1) 같은 화자 인접 조각 병합(덩어리↑ → 매핑 단서↑)  2) 덩어리에 화자 매핑
+        merged = merge_segments(result["segments"], max_gap=config.MERGE_MAX_GAP)
+        chunk_spk = diarize_texts([m["text"] for m in merged], hint or [], provider)
+        # 병합 덩어리의 화자를 원본 조각으로 다시 펼침(원문·세그먼트 보존)
         segs = []
-        for i, t in enumerate(texts):
-            spk = spk_by_id.get(i + 1) or "화자1"
-            segs.append({"id": i + 1, "speaker": spk,
-                         "role": role_by_name.get(spk, "참석자"), "text": t})
+        for m, spk in zip(merged, chunk_spk):
+            for j in m["seg_ids"]:
+                segs.append({"id": j + 1, "speaker": spk,
+                             "role": role_by_name.get(spk, "참석자"),
+                             "text": result["segments"][j]["text"].strip()})
+        segs.sort(key=lambda s: s["id"])
         speakers = (hint or _infer_speakers(segs))
         _save(out, {**meta, "speakers": speakers, "segments": segs})
-        mapped = sum(1 for s in segs if s["speaker"] != "화자1")
-        print(f"🎉 STT + 화자 매핑 완료 ({len(segs)} 발화, 매핑 {mapped}건, 화자 {len(speakers)}명)")
+        print(f"🎉 STT + 화자 매핑 완료 (원본 {len(segs)} 발화 → 병합 {len(merged)} 덩어리, "
+              f"화자 {len(speakers)}명)")
     except Exception as e:
         print(f"⚠️ 화자 매핑 실패({e}) — 받아쓰기 원문만 단일 화자로 저장(폴백).")
-        segs = [{"id": i + 1, "speaker": "화자1", "role": "참석자", "text": t}
-                for i, t in enumerate(texts)]
+        segs = [{"id": i + 1, "speaker": "화자1", "role": "참석자", "text": s["text"].strip()}
+                for i, s in enumerate(result["segments"])]
         _save(out, {**meta, "speakers": [{"name": "화자1", "role": "참석자"}], "segments": segs})
 
 
