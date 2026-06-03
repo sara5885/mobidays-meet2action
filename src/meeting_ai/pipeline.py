@@ -94,7 +94,6 @@ def run(transcript_path: str | Path) -> dict:
     print(f"✅ provider={config.LLM_PROVIDER} | meeting={meta['meeting_id']} | "
           f"utterances={len(utterances)} chunks={len(chunks)} "
           f"action_items={len(all_items)} (낮은신뢰 {n_low}건)")
-    print(f"   약어 용어집: {list(glossary.keys())}")
     print(f"   Slack 페이로드 → {out.name}")
     return {"meta": meta, "n_action_items": len(all_items), "metrics": m}
 

@@ -8,10 +8,11 @@ install:
 	$(PYTHON) -m pip install -r requirements.txt
 
 ## run: 한 줄 데모 — DB 초기화 → 전체 회의 적재 → 진행상황 시뮬 → 대시보드 실행
-##      키/설치 없이 동작하도록 mock LLM 고정(외부 전송 0). 실제 LLM은 make ingest-all 사용.
+##      provider는 .env의 LLM_PROVIDER를 따름(미설정 시 mock → 키·설치 없이 동작).
+##      실제 LLM 데모는 .env에 LLM_PROVIDER=ollama(또는 gemini) 두고 그대로 make run.
 run: clean
-	LLM_PROVIDER=mock PYTHONPATH=src $(PYTHON) -m meeting_ai.pipeline --all
-	LLM_PROVIDER=mock PYTHONPATH=src $(PYTHON) scripts/simulate_progress.py
+	PYTHONPATH=src $(PYTHON) -m meeting_ai.pipeline --all
+	PYTHONPATH=src $(PYTHON) scripts/simulate_progress.py
 	PYTHONPATH=src $(PYTHON) -m streamlit run dashboard/app.py
 
 ## dashboard: (이미 적재된 상태에서) 대시보드만 다시 실행
