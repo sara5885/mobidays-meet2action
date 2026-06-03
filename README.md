@@ -22,12 +22,13 @@ make run         # DB 초기화 → 전체 회의 적재 → 진행상황 시뮬
 > **실제 LLM로 데모**하려면 `.env`에 `LLM_PROVIDER=ollama`(온프레미스, 외부 전송 0) 또는
 > `gemini`를 지정하고 그대로 `make run` 하면 됩니다 — 같은 한 줄로 실제 추출까지 보여줄 수 있습니다.
 
-### B. 실제 운영 (회의 누적·실 LLM) — DB 초기화 안 함
+### B. 실제 운영 (회의 누적) 
 
 ```bash
 cp .env.example .env             # LLM_PROVIDER = mock | gemini | ollama
-#   gemini — Gemini 2.5 Flash. GEMINI_API_KEY 필요(무료 분당 5회). 외부 API라 가상 광고주만
-#   ollama — 로컬 LLM(무료·무제한·온프레미스). 외부 유출 금지 제약 충족
+#   gemini — Gemini 2.5 Flash. GEMINI_API_KEY 필요
+#   ollama — 로컬 LLM
+
 make ingest FILE=data/raw/회의.json  # 회의 1건을 기존 DB에 '추가'(같은 meeting_id면 그 회의만 교체)
 make ingest-all                      # data/raw 전체를 누적 적재
 make dashboard                       # (적재 후) 대시보드만 실행
@@ -38,9 +39,9 @@ make dashboard                       # (적재 후) 대시보드만 실행
 > **회의 단위 멱등**이라 같은 회의 재적재 시 그 회의만 교체되고 **사람이 바꾼 상태는 보존**됩니다.
 
 ```bash
-make test        # 멱등성·스키마·상태보존 테스트 3종 (항상 mock으로 결정적)
+make test        # 멱등성·스키마·상태보존 테스트 3종 (항상 mock으로 deterministic함)
 
-# (가산점) 로컬 Whisper STT — mp3 → 화자분리 transcript JSON
+# 로컬 Whisper STT — mp3 → 화자분리 transcript JSON
 make stt                              # 제공 샘플 mp3
 make stt FILE=data/raw/다른회의.mp3    # 임의 음성 파일
 ```
