@@ -73,12 +73,23 @@ def build_user_prompt(
     glossary: dict[str, str] | None = None,
     meeting_id: str | None = None,
     roster: list[dict] | None = None,
+    summary: dict | None = None,
 ) -> str:
     gloss = ""
     if glossary:
         lines = "\n".join(f"- {k}: {v}" for k, v in glossary.items())
         gloss = f"[이 회의에 등장한 약어 용어집]\n{lines}\n\n"
     header = f"[meeting_id: {meeting_id}]\n" if meeting_id else ""
+
+    # 회의록 chaining: 먼저 정리한 안건·결정사항을 컨텍스트로 주면, 결정→실행(액션) 도출이 정확해짐
+    summary_block = ""
+    if summary and (summary.get("agenda") or summary.get("decisions")):
+        ag = " / ".join(summary.get("agenda", []))
+        de = "\n".join(f"  - {d}" for d in summary.get("decisions", []))
+        summary_block = (
+            f"[먼저 정리된 회의록 — 이 결정들을 실행하기 위한 액션아이템을 도출하세요]\n"
+            f"안건: {ag}\n결정사항:\n{de}\n\n"
+        )
 
     # 참석자 명단을 '닫힌 후보 집합'으로 명시 → owner를 이 중에서만 고르게(환각↓·정확도↑)
     roster_block = ""
@@ -95,6 +106,7 @@ def build_user_prompt(
 
     return (
         f"{header}"
+        f"{summary_block}"
         f"{roster_block}"
         f"{gloss}"
         f"{FEWSHOT}\n\n"

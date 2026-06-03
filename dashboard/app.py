@@ -298,22 +298,24 @@ c3, c4 = st.columns([1, 1])
 
 with c3:
     with st.container(border=True):
-        st.markdown('<div class="wtitle">반복 이슈 키워드 (BoW)</div>'
-                    '<div class="wsub">여러 회의 반복 등장 = 구조적 과제 (빨강=반복 多)</div>',
-                    unsafe_allow_html=True)
+        st.markdown('<div class="wtitle">반복 이슈 키워드</div>', unsafe_allow_html=True)
         docs = {r["meeting_id"]: r["text"]
                 for r in u_view.group_by("meeting_id").agg(
                     pl.col("text").str.join(" ").alias("text")).iter_rows(named=True)}
-        kws = top_keywords(docs, top_n=12)
+        kws = top_keywords(docs, top_n=14)
         if kws:
+            # 중요도(score) 높을수록 글자 크게 + 진하게. 순서도 점수순.
+            smax = max(k["score"] for k in kws) or 1
             chips = []
             for k in kws:
-                cls = "chip-hi" if k["df"] >= 3 else ("chip-mid" if k["df"] == 2 else "chip-lo")
-                chips.append(f'<span class="chip {cls}">{k["keyword"]}</span>')
-            st.markdown("<div>" + "".join(chips) + "</div>", unsafe_allow_html=True)
-            rep = [k["keyword"] for k in kws if k["df"] >= 3]
-            if rep:
-                st.caption("🔁 반복 이슈: " + ", ".join(rep) + " → 근본 원인 과제 후보")
+                sz = 13 + round((k["score"] / smax) * 13)   # 13~26px
+                shade = 900 if k["score"] / smax > 0.66 else (800 if k["score"] / smax > 0.33 else 600)
+                chips.append(
+                    f'<span style="display:inline-block;margin:3px 7px;font-size:{sz}px;'
+                    f'font-weight:500;color:var(--ink,#1f2430);opacity:{0.55 + 0.45*k["score"]/smax:.2f}">'
+                    f'{k["keyword"]}</span>')
+            st.markdown("<div style='line-height:2.1'>" + "".join(chips) + "</div>",
+                        unsafe_allow_html=True)
         else:
             st.info("키워드를 추출할 발화가 없습니다.")
 

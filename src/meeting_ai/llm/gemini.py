@@ -42,4 +42,8 @@ class GeminiProvider(LLMProvider):
             generation_config=self._cfg,
         )
         resp = model.generate_content(user)
+        um = getattr(resp, "usage_metadata", None)
+        if um is not None:
+            self.last_usage = {"prompt": getattr(um, "prompt_token_count", 0),
+                               "completion": getattr(um, "candidates_token_count", 0)}
         return resp.text

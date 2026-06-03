@@ -47,4 +47,6 @@ class OllamaProvider(LLMProvider):
                 f"Ollama 호출 실패({e}). `ollama serve` 가 떠 있는지, "
                 f"모델({self._model})을 `ollama pull` 했는지 확인하세요."
             ) from e
+        self.last_usage = {"prompt": body.get("prompt_eval_count", 0),
+                           "completion": body.get("eval_count", 0)}
         return body.get("response", "")

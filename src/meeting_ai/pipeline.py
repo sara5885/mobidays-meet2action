@@ -12,7 +12,7 @@ import re
 import sys
 from pathlib import Path
 
-from . import config, db
+from . import config, db, metrics
 from .extract import extract_from_chunk, summarize_meeting
 from .llm import get_provider
 from .preprocess import abbrev_glossary, to_chunks
@@ -60,20 +60,30 @@ def run(transcript_path: str | Path) -> dict:
     roster = db.get_participants(con, meta["meeting_id"]) or _roster_from_utterances(utterances)
 
     provider = get_provider()
+    metrics.reset()  # 이번 실행 호출/토큰 계측 초기화
+
+    # 회의록 정리(요약·안건·결정사항)를 먼저 — chaining 시 액션 추출의 컨텍스트로 사용
+    full_text = "\n".join(ch.text for ch in chunks)
+    summary = summarize_meeting(full_text, meta["meeting_id"], provider)
+    summ_ctx = summary.model_dump() if config.CHAIN_SUMMARY_FIRST else None
+
     all_items: list[ActionItem] = []
     for ch in chunks:
         all_items.extend(
-            extract_from_chunk(ch, valid_seg_ids, provider, glossary, roster)
+            extract_from_chunk(ch, valid_seg_ids, provider, glossary, roster, summ_ctx)
         )
     all_items = _dedup(all_items)
-
-    # 회의록 정리(요약·안건·결정사항) — 전체 발화 기준 1회
-    full_text = "\n".join(ch.text for ch in chunks)
-    summary = summarize_meeting(full_text, meta["meeting_id"], provider)
 
     db.upsert_action_items(con, meta["meeting_id"], all_items)
     db.upsert_summary(con, meta["meeting_id"], summary)
     con.close()
+
+    # 실행 계측 저장 (chaining ON/OFF 비교용)
+    m = metrics.CURRENT.as_dict()
+    mfile = config.DATA_DIR / "run_metrics.json"
+    rec = {"meeting_id": meta["meeting_id"], "chaining": config.CHAIN_SUMMARY_FIRST,
+           "provider": config.LLM_PROVIDER, **m}
+    mfile.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
 
     # Slack 페이로드 샘플 저장
     payload = build_slack_payload(meta.get("title") or meta["meeting_id"], all_items)
@@ -85,8 +95,10 @@ def run(transcript_path: str | Path) -> dict:
           f"utterances={len(utterances)} chunks={len(chunks)} "
           f"action_items={len(all_items)} (낮은신뢰 {n_low}건)")
     print(f"   약어 용어집: {list(glossary.keys())}")
+    print(f"   chaining={config.CHAIN_SUMMARY_FIRST} | LLM호출 {m['calls']}회 "
+          f"· {m['seconds']}s · 토큰 {m['total_tokens']}(in {m['prompt_tokens']}/out {m['completion_tokens']})")
     print(f"   Slack 페이로드 → {out}")
-    return {"meta": meta, "n_action_items": len(all_items)}
+    return {"meta": meta, "n_action_items": len(all_items), "metrics": m}
 
 
 def run_all() -> None:

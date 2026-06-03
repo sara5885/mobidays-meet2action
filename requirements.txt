@@ -14,6 +14,5 @@ pytest>=8.0.0
 
 # Ollama provider는 추가 패키지 불필요 (표준 라이브러리 urllib 사용)
 
-# (선택) 한국어 형태소 분석기 — 키워드 추출 시 명사만 정확히 뽑음. 없으면 정규식 폴백.
-# pip install kiwipiepy
-# kiwipiepy>=0.17
+# 한국어 형태소 분석기 — 키워드 추출 시 명사만 정확히 뽑음(없으면 정규식 폴백)
+kiwipiepy>=0.17

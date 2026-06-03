@@ -30,6 +30,10 @@ WHISPER_MODEL = os.getenv("WHISPER_MODEL", "medium")
 # 화자 매핑 전 '같은 화자 인접 조각 병합'의 최대 시간 간격(초). 클수록 많이 합침.
 MERGE_MAX_GAP = float(os.getenv("MERGE_MAX_GAP", "1.5"))
 
+# 회의록 → 액션아이템 chaining: 실측상 소형 로컬모델(7B)에선 이득이 없어 기본 OFF.
+# 더 큰 모델 도입 시 CHAIN_SUMMARY_FIRST=1 로 켤 수 있게 플래그로 유지.
+CHAIN_SUMMARY_FIRST = os.getenv("CHAIN_SUMMARY_FIRST", "0") not in ("0", "false", "False")
+
 # 검증/재시도
 MAX_LLM_RETRIES = int(os.getenv("MAX_LLM_RETRIES", "2"))
 

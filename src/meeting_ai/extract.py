@@ -30,11 +30,14 @@ def _retry_delay_sec(e: Exception, default: float = 20.0) -> float:
     return min((float(m.group(1)) + 2) if m else default, 65.0)
 
 
-def _complete_with_backoff(provider: LLMProvider, system: str, user: str) -> str:
-    """rate limit(429) 시 권장 대기 후 재시도. 다른 에러는 그대로 올린다."""
+def _complete_with_backoff(provider: LLMProvider, system: str, user: str,
+                           stage: str = "extract") -> str:
+    """rate limit(429) 시 권장 대기 후 재시도. 호출 1건을 metrics에 계측."""
+    from . import metrics
     for i in range(RATE_LIMIT_RETRIES):
         try:
-            return provider.complete_json(system, user)
+            with metrics.timer(stage, provider):
+                return provider.complete_json(system, user)
         except Exception as e:
             if not _is_rate_limit(e) or i == RATE_LIMIT_RETRIES - 1:
                 raise
@@ -70,7 +73,7 @@ def summarize_meeting(chunk_text: str, meeting_id: str,
     user = build_summary_prompt(chunk_text, meeting_id)
     for _ in range(config.MAX_LLM_RETRIES + 1):
         try:
-            raw = _complete_with_backoff(provider, SUMMARY_SYSTEM, user)
+            raw = _complete_with_backoff(provider, SUMMARY_SYSTEM, user, stage="summary")
             return MeetingSummary(**json.loads(_strip_code_fence(raw)))
         except Exception as e:
             last = e
@@ -84,9 +87,10 @@ def extract_from_chunk(
     provider: LLMProvider | None = None,
     glossary: dict[str, str] | None = None,
     roster: list[dict] | None = None,
+    summary: dict | None = None,
 ) -> list[ActionItem]:
     provider = provider or get_provider()
-    base = build_user_prompt(chunk.text, glossary, chunk.meeting_id, roster)
+    base = build_user_prompt(chunk.text, glossary, chunk.meeting_id, roster, summary)
     user = base
 
     last_err: Exception | None = None
