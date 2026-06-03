@@ -1,7 +1,29 @@
+# ── Python ──
 __pycache__/
 *.pyc
-.env
-data/db/*.duckdb
-data/slack_payload_sample.json
 .venv/
+.pytest_cache/
+
+# ── 비밀/환경 ──
+.env
+
+# ── OS / IDE ──
 .DS_Store
+.idea/
+
+# ── 생성 산출물 (재현 가능 → 커밋하지 않음) ──
+# DuckDB 파일은 `make run`이 매번 새로 적재
+data/db/*.duckdb
+data/db/*.duckdb.wal
+# 파이프라인이 매 실행 갱신하는 계측/페이로드 샘플
+data/run_metrics.json
+data/slack_payload_sample.json
+
+# ── STT 시행착오 산출물 (실험 비교본 — `make stt`로 재생성 가능) ──
+# 품질검증 결론은 docs/STT_품질검증.md, 대표 결과는 data/raw/*_whisper.json 만 커밋
+data/stt/
+data/stt_input/
+
+# ── 내부 작업용 문서 (제출물 아님) ──
+docs/녹화_시나리오.md
+docs/진행상황_정리.html

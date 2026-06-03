@@ -6,52 +6,50 @@
 ## 실행 방법
 
 ```bash
-# 1. 설치
-make install            # 또는: pip install -r requirements.txt
+make install     # 의존성 설치 (또는: pip install -r requirements.txt)
+make run         # ⭐ 한 줄 데모: DB 초기화 → 전체 회의 적재 → 진행상황 시뮬 → 대시보드 실행
+```
 
-# 2. (선택) LLM 설정 — 기본은 mock이라 키/설치 없이도 전체 흐름 동작
+`make run` 한 줄이면 키·설치 없이 전체 흐름이 돕니다 (mock LLM 고정 → **외부 전송 0**,
+결정적 출력). 데이터를 적재하고 대시보드(Streamlit)까지 자동으로 띄웁니다.
+
+```bash
+# (선택) 실제 LLM로 추출해 보기 — .env 설정 후
 cp .env.example .env
-#   provider 3종 (LLM_PROVIDER):
-#     mock   — 결정적 응답(기본). 시연·테스트용
-#     gemini — 실제 Gemini 2.5 Flash. GEMINI_API_KEY 필요 (무료 티어 분당 5회 제한)
+#   LLM_PROVIDER:
+#     mock   — 결정적 응답(기본). 키/설치 불필요
+#     gemini — Gemini 2.5 Flash. GEMINI_API_KEY 필요 (무료 티어 분당 5회). 외부 API라 가상 광고주만
 #     ollama — 로컬 LLM(무료·무제한·온프레미스). `ollama serve` + `ollama pull qwen2.5:7b`
+make ingest-all  # 전체 회의 적재 (.env의 provider 사용) → 이후 make dashboard
+make ingest      # 제공 실데이터 1건만 적재
 
-# 3. 파이프라인 실행 (transcript → DuckDB 적재 → 액션아이템)
-make run        # 제공된 실데이터 1건 적재
-make run-all    # 실데이터 + 합성 회의 전체 적재
-make demo       # run-all + 진행상황 시뮬레이션 (대시보드용 권장)
-
-# 4. 대시보드 (먼저 make demo 권장)
-make dashboard          # streamlit run dashboard/app.py
-#   대시보드에서 액션아이템 상태(대기/진행중/완료/지연)를 직접 변경·저장 가능
-#   → action_status에 저장되어 파이프라인 재실행에도 보존됨
-
-# (스키마가 바뀐 버전으로 처음 실행할 때는 기존 DB 제거 후 다시 적재)
-make clean && make demo
-
-# 테스트 (멱등성·스키마·상태보존 3종, 항상 mock으로 결정적 실행)
-make test
+make dashboard   # (이미 적재된 상태에서) 대시보드만 다시 실행
+make test        # 멱등성·스키마·상태보존 테스트 3종 (항상 mock으로 결정적)
 
 # (가산점) 로컬 Whisper STT — mp3 → 화자분리 transcript JSON
 make stt                              # 제공 샘플 mp3
 make stt FILE=data/raw/다른회의.mp3    # 임의 음성 파일
-PYTHONPATH=src python -m meeting_ai.pipeline data/stt/<파일명>.json
 ```
 
-> **데이터 적재 절차**: `make run` 이 `data/raw/ko_meeting_3speakers.json`(제공 실데이터)을 읽어
-> 정제 → 청크 → DuckDB(`data/db/meeting.duckdb`) 적재 → 액션아이템 추출까지 수행합니다.
-> 대시보드의 추이·키워드 위젯은 회의가 여러 건이어야 의미가 있어, `make run-all` 로
-> 합성 회의(`make synth` 로 생성)까지 함께 적재합니다.
-> 다른 회의는 `PYTHONPATH=src python -m meeting_ai.pipeline <경로>` 로 개별 적재합니다.
+> **적재 절차**: 파이프라인이 `data/raw/*.json`(제공 실데이터 1건 + 합성 회의 3건)을 읽어
+> 정제 → 청크 → DuckDB(`data/db/meeting.duckdb`) 적재 → 회의록 정리 + 액션아이템 추출까지 수행.
+> 제공된 실제 회의는 `nova-2026-05-28` 1건뿐이라, 추이·반복키워드 위젯이 의미를 가지도록
+> `scripts/gen_synthetic.py`로 만든 가상 회의 3건을 함께 적재합니다.
 
-## 대시보드 위젯 (3.4)
+## 대시보드 (3.4) — "의사결정 흐름"으로 구성
 
-`make run-all` 후 `make dashboard` 로 실행. "의사결정 흐름"으로 구성:
+`make run` 으로 실행. 단순 차트 나열이 아니라 회의록 열람 → 진척 파악 → 검수 → 상태 관리 순:
 
-1. **주차별 회의·액션아이템 추이** — 워크로드가 몰리는 주 파악 → 리소스 사전 배분
-2. **담당자별 미완료 Top N** — 누가 병목인가 → 업무 재분배
-3. **반복 이슈 키워드(BoW)** — 여러 회의에 반복 등장하는 주제(예: 전환 추적/픽셀) → 근본 원인 과제 식별
-4. **confidence 분포 + 낮은 항목 드릴다운** — 낮은 신뢰도 항목만 사람이 검수
+- **📄 회의록 (자동 정리)** — 회의 목록 → 클릭 → 요약·안건·결정사항 + 액션아이템 + 원문
+  transcript 대조. 회의록은 화면에서 직접 수정 가능(override 보존).
+- **KPI** — 회의 수, 액션아이템(완료/전체)·완료율.
+- **주차별 회의·액션아이템 추이** — 워크로드가 몰리는 주 파악 → 리소스 사전 배분.
+- **담당자별 미완료 Top N** — 누가 병목인가 → 업무 재분배.
+- **반복 이슈 키워드(BoW)** — 여러 회의에 반복 등장하는 주제(전환 추적/픽셀 등) → 근본 원인 과제.
+- **LLM Confidence 분포 + 검수 권장** — 신뢰도 낮은 항목만 사람이 검수.
+- **✏️ 액션아이템 상태 관리** — 담당자·제목·기한·상태 편집, 추가(➕)·삭제(🗑)를 모두
+  **"변경사항 검토 및 저장"** 한 흐름으로 확인 후 반영. 회의별·담당자별로 묶여 표시되고,
+  사람이 바꾼 값은 파이프라인 재실행에도 보존됩니다(아래 멱등성 참고).
 
 ## 아키텍처 및 데이터 흐름
 
@@ -134,10 +132,22 @@ LLM 출력은 비결정적이라 제목이 흔들릴 수 있어, **회의(meetin
 
 ## 현재 상태
 
-✅ 핵심 파이프라인: transcript → 정제 → DuckDB 멱등 적재 → LLM 추출(스키마 강제/검증/재시도/환각필터) → 대시보드
+✅ 핵심 파이프라인: transcript → 정제 → DuckDB 멱등 적재 → 회의록 정리 + LLM 추출(스키마 강제/검증/재시도/환각필터) → 대시보드
 ✅ 실제 LLM 호출 PoC — **Gemini 2.5 Flash** 및 **Ollama(로컬)** 동작 확인 (provider 추상화)
-✅ 대시보드 위젯 4개 + 상태 편집(진행상황 업데이트 루프) + 변경 이력
+✅ 대시보드 — 회의록 자동정리 열람·수정 + 위젯 + 액션아이템 상태 관리(검토→저장, 추가·삭제·수정)
 ✅ 로컬 Whisper STT + 화자 분리 (임의 mp3 → transcript JSON)
-✅ 멱등성·스키마·상태보존 테스트 3종 통과
+✅ 멱등성·스키마·상태보존 테스트 3종 통과 + 추출 품질 eval(F1 0.81)
 
-⬜ 남은 작업: 기획안 PDF 제출본 / 대시보드 화면 녹화 / (가산점) precision-recall·임베딩 유사검색
+## 알려진 한계 & 향후 계획
+
+시간 제약상 구현하지 못했지만 방향이 정리된 것들 (상세: `docs/기획안.md` "현재 한계" / "향후 확장"):
+
+- **회의 식별 멱등성** — 현재 `meeting_id`가 입력 JSON id(없으면 파일명)에 의존.
+  → 업로드 시 **(광고주+날짜+시간) 복합키**로 결정하면 사람 개입 없이 회의 단위 멱등성 보장. *(우선순위 높음)*
+- **액션아이템 항목 식별** — `action_key`가 정규화 제목 해시라 LLM 재서술(문구 변경)엔 취약(고아 발생).
+  → temperature 고정 + **제목 임베딩 유사도 매칭**으로 보완.
+- **STT 품질** — 한국어·광고 약어 오인식이 파이프라인 품질의 상한(`docs/STT_품질검증.md`).
+  → 고성능 STT + 약어 사전·사람 검수로 완충. 정식 화자분리는 pyannote 등 음성 기반으로 대체.
+- **기한 정규화** — due가 자연어 문자열("다음주 금요일"). → 절대 날짜 파싱으로 마감 임박순 정렬·D-day 알림.
+- **평가의 한계** — gold가 1인 수기 기준 + 무료 티어라 LLM-as-judge 미적용. → 다수 평가자·judge 도입 시 절대 점수화.
+- **KPI 주간 델타 / 지연(blocked) 사유 입력 UX** — 데이터 누적·UX 확정 후 추가.

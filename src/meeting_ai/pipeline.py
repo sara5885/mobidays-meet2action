@@ -104,8 +104,9 @@ def run(transcript_path: str | Path) -> dict:
 def run_all() -> None:
     """data/raw 의 모든 회의 transcript를 적재 (sample 제외).
     멱등성 덕분에 반복 실행해도 안전하다."""
+    # sample_transcript(예시) 및 *_whisper(STT 출력 증빙 — 동일 meeting_id 중복 적재 방지) 제외
     files = sorted(p for p in config.RAW_DIR.glob("*.json")
-                   if p.stem != "sample_transcript")
+                   if p.stem != "sample_transcript" and not p.stem.endswith("_whisper"))
     if not files:
         print("data/raw 에 transcript JSON이 없습니다.")
         return
