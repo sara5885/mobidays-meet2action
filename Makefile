@@ -18,11 +18,12 @@ run: clean
 dashboard:
 	PYTHONPATH=src $(PYTHON) -m streamlit run dashboard/app.py
 
-## ingest: 제공 실데이터 1건만 적재 (.env의 LLM_PROVIDER 사용)
+## ingest: 회의 1건 '추가' 적재 (DB 초기화 안 함 → 기존 데이터에 누적, 사람 수정 보존)
+##         기본은 제공 실데이터. 다른 회의: make ingest FILE=data/raw/회의.json
 ingest:
-	PYTHONPATH=src $(PYTHON) -m meeting_ai.pipeline data/raw/ko_meeting_3speakers.json
+	PYTHONPATH=src $(PYTHON) -m meeting_ai.pipeline $(if $(FILE),$(FILE),data/raw/ko_meeting_3speakers.json)
 
-## ingest-all: 실데이터 + 합성 회의 전체 적재 (.env의 LLM_PROVIDER 사용)
+## ingest-all: 실데이터 + 합성 회의 전체 누적 적재 (DB 초기화 안 함, .env의 LLM_PROVIDER 사용)
 ingest-all:
 	PYTHONPATH=src $(PYTHON) -m meeting_ai.pipeline --all
 

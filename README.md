@@ -7,23 +7,34 @@
 
 ```bash
 make install     # 의존성 설치 (또는: pip install -r requirements.txt)
-make run         # ⭐ 한 줄 데모: DB 초기화 → 전체 회의 적재 → 진행상황 시뮬 → 대시보드 실행
 ```
 
-`make run` 한 줄이면 키·설치 없이 전체 흐름이 돕니다 (mock LLM 고정 → **외부 전송 0**,
-결정적 출력). 데이터를 적재하고 대시보드(Streamlit)까지 자동으로 띄웁니다.
+### A. 빠른 데모 (평가용) — 한 줄
 
 ```bash
-# (선택) 실제 LLM로 추출해 보기 — .env 설정 후
-cp .env.example .env
-#   LLM_PROVIDER:
-#     mock   — 결정적 응답(기본). 키/설치 불필요
-#     gemini — Gemini 2.5 Flash. GEMINI_API_KEY 필요 (무료 티어 분당 5회). 외부 API라 가상 광고주만
-#     ollama — 로컬 LLM(무료·무제한·온프레미스). `ollama serve` + `ollama pull qwen2.5:7b`
-make ingest-all  # 전체 회의 적재 (.env의 provider 사용) → 이후 make dashboard
-make ingest      # 제공 실데이터 1건만 적재
+make run         # ⭐ DB 초기화 → 전체 회의 적재 → 진행상황 시뮬 → 대시보드 실행
+```
 
-make dashboard   # (이미 적재된 상태에서) 대시보드만 다시 실행
+키·설치 없이 전체 흐름이 돕니다(mock LLM 고정 → **외부 전송 0**, 결정적 출력). 데이터를
+적재하고 대시보드(Streamlit)까지 자동으로 띄웁니다. **매 실행 DB를 초기화**해 항상 깨끗한
+상태를 보장합니다(데모 전용).
+
+### B. 실제 운영 (회의 누적·실 LLM) — DB 초기화 안 함
+
+```bash
+cp .env.example .env             # LLM_PROVIDER = mock | gemini | ollama
+#   gemini — Gemini 2.5 Flash. GEMINI_API_KEY 필요(무료 분당 5회). 외부 API라 가상 광고주만
+#   ollama — 로컬 LLM(무료·무제한·온프레미스). 외부 유출 금지 제약 충족
+make ingest FILE=data/raw/회의.json  # 회의 1건을 기존 DB에 '추가'(같은 meeting_id면 그 회의만 교체)
+make ingest-all                      # data/raw 전체를 누적 적재
+make dashboard                       # (적재 후) 대시보드만 실행
+```
+
+> **데모(A) vs 운영(B)**: `make run`은 *비우고 새로* 적재하는 데모 명령이고, 실제로 회의를
+> 계속 쌓을 때는 `make ingest`/`ingest-all`을 씁니다. 후자는 DB를 비우지 않으며, 파이프라인이
+> **회의 단위 멱등**이라 같은 회의 재적재 시 그 회의만 교체되고 **사람이 바꾼 상태는 보존**됩니다.
+
+```bash
 make test        # 멱등성·스키마·상태보존 테스트 3종 (항상 mock으로 결정적)
 
 # (가산점) 로컬 Whisper STT — mp3 → 화자분리 transcript JSON
