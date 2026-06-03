@@ -105,6 +105,10 @@ adv_map = dict(zip(meetings["meeting_id"].to_list(), meetings["advertiser"].to_l
 items = items.with_columns(
     pl.col("meeting_id").replace_strict(adv_map, default="(미상)").alias("advertiser"))
 
+# 상태 표기 (전역 — 여러 위젯이 공유)
+STATUS_OPTS = ["open", "in_progress", "done", "blocked"]
+STATUS_KR = {"open": "⬜ 대기", "in_progress": "🔵 진행중", "done": "✅ 완료", "blocked": "⛔ 지연/막힘"}
+
 # 담당자(owner) 표시: 역할은 여러 명이 맡을 수 있으므로 '이름(직원id)·역할'로 해석.
 # (회의별 참석자 명단에서 role→직원 매핑. 같은 역할 다수면 이름들 나열, 매칭 없으면 역할 그대로)
 def _owner_display(meeting_id: str, owner: str) -> str:
@@ -182,27 +186,24 @@ def _delta(cur, prev, unit=""):
     return '<span class="delta-flat">— 지난주와 동일</span>'
 
 
-# KPI 델타: 데이터가 있는 마지막 두 주 비교
-nonzero = wk.filter(pl.col("items") > 0) if wk.height else pl.DataFrame()
-last_items = int(nonzero["items"][-1]) if nonzero.height >= 1 else None
-prev_items = int(nonzero["items"][-2]) if nonzero.height >= 2 else None
-
-# ── KPI ──
-open_cnt = i_view.filter(pl.col("status") != "done").height
-avg_conf = i_view["confidence"].mean()
+# ── KPI ── (진척 중심: 완료/미완료/완료율. 주 단위 델타는 단발 데이터엔 부자연스러워 제거)
+total_ai = i_view.height
+done_cnt = i_view.filter(pl.col("status") == "done").height
+open_cnt = total_ai - done_cnt
+rate = round(100 * done_cnt / total_ai) if total_ai else 0
 
 
-def kpi(col, label, value, delta_html=""):
+def kpi(col, label, value, sub=""):
+    sub_html = f'<div class="delta-flat">{sub}</div>' if sub else ""
     col.markdown(f'<div class="kpi"><div class="label">{label}</div>'
-                 f'<div class="value">{value}</div>{delta_html}</div>',
+                 f'<div class="value">{value}</div>{sub_html}</div>',
                  unsafe_allow_html=True)
 
 
-k1, k2, k3, k4 = st.columns(4)
+k1, k2, k3 = st.columns(3)
 kpi(k1, "회의 수", m_view.height)
-kpi(k2, "신규 액션아이템", i_view.height, _delta(last_items, prev_items, "건"))
-kpi(k3, "미완료", open_cnt)
-kpi(k4, "평균 Confidence", f"{avg_conf:.2f}")
+kpi(k2, "액션아이템", total_ai)
+kpi(k3, "진행 (완료/전체)", f"{done_cnt}/{total_ai}", f"완료율 {rate}%")
 st.write("")
 
 # ── 📄 회의록 (목록 → 클릭 → 상세). 가독성 위해 기본은 목록만 표시 ──
@@ -249,7 +250,8 @@ with st.container(border=True):
         parts = participants.get(sel, [])
         names = ", ".join(f'{p["name"]}({p["role"]})' for p in parts) or "—"
 
-        st.markdown(f"### {mrow['title'] or sel}")
+        edited_badge = " <span style='color:#16a34a;font-size:12px'>✎ 수정됨</span>" if summ.get("edited") else ""
+        st.markdown(f"### {mrow['title'] or sel}{edited_badge}", unsafe_allow_html=True)
         st.markdown(f"**① 기본 정보** · 일시 {mrow['date']} · 광고주 {mrow['advertiser'] or '—'}  \n"
                     f"참석자: {names}")
         if summ["summary"]:
@@ -264,6 +266,23 @@ with st.container(border=True):
             st.markdown("**③ 결정 사항 (Decisions)**")
             st.markdown("\n".join(f"- {d}" for d in summ["decisions"]) if summ["decisions"]
                         else "_확정된 결정사항 없음 (흐릿한 논의는 제외)_")
+
+        # 회의록 직접 수정 (override 보존)
+        with st.expander("✏️ 회의록 수정"):
+            e_sum = st.text_area("요약", value=summ["summary"], key=f"es_{sel}", height=80)
+            e_ag = st.text_area("안건 (한 줄에 하나)", value="\n".join(summ["agenda"]),
+                                key=f"ea_{sel}", height=100)
+            e_de = st.text_area("결정 사항 (한 줄에 하나)", value="\n".join(summ["decisions"]),
+                                key=f"ed_{sel}", height=100)
+            if st.button("💾 회의록 저장", key=f"esave_{sel}"):
+                wcon = db.connect()
+                db.save_summary_override(
+                    wcon, sel, e_sum.strip(),
+                    [x.strip() for x in e_ag.splitlines() if x.strip()],
+                    [x.strip() for x in e_de.splitlines() if x.strip()])
+                wcon.close()
+                st.success("회의록을 저장했습니다.")
+                st.rerun()
 
         st.markdown("**④ 액션 아이템 (담당자 / 기한 / 할 일)**")
         ai = i_view.filter(pl.col("meeting_id") == sel).select(
@@ -320,7 +339,9 @@ with c2:
             p = by_owner.to_pandas()
             colors = ["#dc2626", "#ea580c", "#f59e0b", "#3b82f6", "#22a06b", "#9ca3af"]
             xmax = int(p["cnt"].max())
-            fig = go.Figure(go.Bar(x=p["cnt"], y=p["owner_disp"], orientation="h",
+            # 라벨 2줄: "이름(id)" 윗줄, "역할" 아랫줄
+            ylab = [s.replace(" · ", "<br>") for s in p["owner_disp"]]
+            fig = go.Figure(go.Bar(x=p["cnt"], y=ylab, orientation="h",
                                    marker_color=colors[:len(p)], width=0.6,  # 막대 두께 고정
                                    text=[f"{v}건" for v in p["cnt"]], textposition="outside"))
             # 담당자 수와 무관하게 행 높이 일정(통일성). x축도 정수 눈금 고정.
@@ -333,10 +354,8 @@ with c2:
         else:
             st.success("미완료 항목이 없습니다.")
 
-# ── 위젯 3 + 4 ──
-c3, c4 = st.columns([1, 1])
-
-with c3:
+# ── 위젯 3: 반복 키워드 (전체 폭 1-column) ──
+if True:
     with st.container(border=True):
         st.markdown('<div class="wtitle">반복 이슈 키워드</div>', unsafe_allow_html=True)
         docs = {r["meeting_id"]: r["text"]
@@ -359,40 +378,45 @@ with c3:
         else:
             st.info("키워드를 추출할 발화가 없습니다.")
 
-with c4:
+# ── 위젯 4: Confidence 분포(좌) + 검수 대상 안내(우, 진단만) ──
+if True:
     with st.container(border=True):
-        st.markdown('<div class="wtitle">LLM Confidence 분포 + 드릴다운</div>'
-                    '<div class="wsub">신뢰도 낮은 항목은 검수 요망</div>',
+        avg_conf = i_view["confidence"].mean() if i_view.height else 0
+        st.markdown('<div class="wtitle">LLM Confidence 분포</div>'
+                    f'<div class="wsub">평균 {avg_conf:.2f} · 신뢰도 낮은 항목은 아래 ‘상태 관리’에서 검수·수정</div>',
                     unsafe_allow_html=True)
-        bands = [("0.9 이상", 0.9, 1.01, "#22a06b"), ("0.7–0.9", 0.7, 0.9, "#84cc16"),
-                 ("0.5–0.7", 0.5, 0.7, "#f59e0b"), ("0.5 미만", 0.0, 0.5, "#dc2626")]
-        total = i_view.height
-        labels, vals, cols = [], [], []
-        for name, lo, hi, color in bands:
-            c = i_view.filter((pl.col("confidence") >= lo) & (pl.col("confidence") < hi)).height
-            labels.append(name); vals.append(round(100 * c / total)); cols.append(color)
-        fig = go.Figure(go.Bar(x=vals, y=labels, orientation="h", marker_color=cols,
-                               text=[f"{v}%" for v in vals], textposition="outside"))
-        fig.update_layout(height=200, margin=dict(t=6, b=6, l=10, r=30),
-                          yaxis=dict(autorange="reversed"), plot_bgcolor="white",
-                          xaxis=dict(range=[0, 100]))
-        st.plotly_chart(fig, use_container_width=True)
-        low = (i_view.filter(pl.col("confidence") < 0.6)
-               .sort("confidence").select(["title", "owner_disp", "due", "confidence", "source_quote"]))
-        st.markdown(f"**검수 필요 (confidence &lt; 0.6) · {low.height}건**", unsafe_allow_html=True)
-        if low.height:
-            # 길어지면 미관 해치니 고정 높이 스크롤 박스로 가둠
-            box = st.container(height=180)
-            for row in low.iter_rows(named=True):
-                q = (row["source_quote"] or "")[:36]
-                meta_line = f'{row["owner_disp"] or "담당자 미정"} · 기한 {row["due"] or "-"}'
-                box.markdown(
-                    f'<div class="quote"><span><b>{row["title"]}</b>'
-                    f'<br><span style="color:#888;font-size:12px">{meta_line} · 근거: "{q}…"</span></span>'
-                    f'<span class="conf-tag">conf {row["confidence"]:.2f}</span></div>',
-                    unsafe_allow_html=True)
-        else:
-            st.success("검수가 필요한 낮은 신뢰도 항목이 없습니다.")
+        gL, gR = st.columns([1.1, 1])
+        with gL:
+            bands = [("0.9 이상", 0.9, 1.01, "#22a06b"), ("0.7–0.9", 0.7, 0.9, "#84cc16"),
+                     ("0.5–0.7", 0.5, 0.7, "#f59e0b"), ("0.5 미만", 0.0, 0.5, "#dc2626")]
+            total = i_view.height or 1
+            labels, vals, cols = [], [], []
+            for name, lo, hi, color in bands:
+                c = i_view.filter((pl.col("confidence") >= lo) & (pl.col("confidence") < hi)).height
+                labels.append(name); vals.append(round(100 * c / total)); cols.append(color)
+            fig = go.Figure(go.Bar(x=vals, y=labels, orientation="h", marker_color=cols, width=0.6,
+                                   text=[f"{v}%" for v in vals], textposition="outside"))
+            fig.update_layout(height=230, margin=dict(t=6, b=6, l=10, r=30),
+                              yaxis=dict(autorange="reversed"), plot_bgcolor="white",
+                              xaxis=dict(range=[0, 100]))
+            st.plotly_chart(fig, use_container_width=True, config={"displayModeBar": False})
+        with gR:
+            # 진단만: 어느 회의·어느 액션인지 안내 (수정은 상태관리에서)
+            low = (i_view.filter(pl.col("confidence") < 0.6)
+                   .with_columns(pl.col("meeting_id").replace_strict(adv_map, default="(미상)").alias("adv"))
+                   .sort("confidence"))
+            st.markdown(f"**검수 권장 · {low.height}건** <span style='color:#888;font-size:12px'>"
+                        f"(아래 상태 관리에서 처리)</span>", unsafe_allow_html=True)
+            if low.height:
+                box = st.container(height=190)
+                for row in low.iter_rows(named=True):
+                    box.markdown(
+                        f'<div class="quote"><span>{row["title"]}<br>'
+                        f'<span style="color:#888;font-size:12px">{row["adv"]}</span></span>'
+                        f'<span class="conf-tag">{row["confidence"]:.2f}</span></div>',
+                        unsafe_allow_html=True)
+            else:
+                st.success("검수가 필요한 항목이 없습니다.")
 
 # ── 액션아이템 상태 관리 (진행상황 업데이트 루프) ──
 st.write("")
@@ -426,6 +450,15 @@ with st.container(border=True):
 
     def _render_item(r):
         ck = r["action_key"]
+        # row 위 왼쪽: 이 액션아이템(행 전체)의 신뢰도 — 낮으면 빨강
+        if r["manual"]:
+            st.markdown("<span style='color:#aaa;font-size:11px'>✍ 수동 추가 항목</span>",
+                        unsafe_allow_html=True)
+        else:
+            low_conf = r["confidence"] < 0.6
+            color, warn = ("#dc2626", " ⚠ 검수 권장") if low_conf else ("#aaa", "")
+            st.markdown(f"<span style='color:{color};font-size:11px'>신뢰도 {r['confidence']:.2f}{warn}</span>",
+                        unsafe_allow_html=True)
         c1, c2, c3, c4, c5 = st.columns([1.6, 2.6, 1.0, 1.1, 0.4])
         cur_eid = _cur_empid(r["meeting_id"], r["owner_role"])
         c1.selectbox("담당자", OWNER_OPTS,
@@ -441,15 +474,14 @@ with st.container(border=True):
         if c5.button("🗑", key=f"del_{ck}", help="이 액션아이템 삭제"):
             wcon = db.connect(); db.set_deleted(wcon, ck, True); wcon.close()
             st.rerun()
-        if not r["manual"]:
-            c2.markdown(f"<span style='color:#aaa;font-size:11px'>신뢰도 {r['confidence']:.2f}</span>",
-                        unsafe_allow_html=True)
-        else:
-            c2.markdown("<span style='color:#aaa;font-size:11px'>✍ 수동 추가</span>",
-                        unsafe_allow_html=True)
+        # 지연(blocked)일 때만 사유칸 — '할 일' 열 아래에 라벨과 함께 (빈 액션처럼 안 보이게)
         if new == "blocked":
-            c2.text_input("지연 사유", value=r.get("delay_reason") or "",
-                          key=f"rs_{ck}", label_visibility="collapsed", placeholder="⛔ 지연 사유")
+            rc1, rc2 = st.columns([1.6, 4.5])
+            rc1.markdown("<span style='color:#dc2626;font-size:12px'>⛔ 지연 사유</span>",
+                         unsafe_allow_html=True)
+            rc2.text_input("지연 사유", value=r.get("delay_reason") or "",
+                           key=f"rs_{ck}", label_visibility="collapsed", placeholder="예: 광고주 컨펌 지연")
+        st.markdown("<div style='margin-bottom:6px'></div>", unsafe_allow_html=True)
 
     # 광고주 필터(i_view)에 해당하는 회의만 표시. 회의별 묶음 + 추가 폼
     for mid in m_view.sort("date")["meeting_id"].to_list():

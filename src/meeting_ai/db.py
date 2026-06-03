@@ -68,6 +68,14 @@ CREATE TABLE IF NOT EXISTS meeting_summary (
     agenda     VARCHAR,   -- JSON 배열 문자열
     decisions  VARCHAR    -- JSON 배열 문자열
 );
+-- 사람이 수정한 회의록(요약·안건·결정). 재실행에도 보존(파이프라인이 안 건드림).
+CREATE TABLE IF NOT EXISTS meeting_summary_override (
+    meeting_id VARCHAR PRIMARY KEY,
+    summary    VARCHAR,
+    agenda     VARCHAR,
+    decisions  VARCHAR,
+    updated_at TIMESTAMP
+);
 -- 추출 레이어 (재실행마다 갱신)
 CREATE TABLE IF NOT EXISTS action_items (
     meeting_id    VARCHAR,
@@ -225,15 +233,31 @@ def upsert_summary(con, meeting_id: str, summary) -> None:
 
 
 def get_summary(con, meeting_id: str) -> dict:
+    """회의록 반환. 사람이 수정한 override가 있으면 그 필드를 우선."""
     import json as _json
-    row = con.execute(
+    base = con.execute(
         "SELECT summary, agenda, decisions FROM meeting_summary WHERE meeting_id=?",
-        [meeting_id]).fetchone()
-    if not row:
-        return {"summary": "", "agenda": [], "decisions": []}
-    return {"summary": row[0] or "",
-            "agenda": _json.loads(row[1] or "[]"),
-            "decisions": _json.loads(row[2] or "[]")}
+        [meeting_id]).fetchone() or (None, None, None)
+    ov = con.execute(
+        "SELECT summary, agenda, decisions FROM meeting_summary_override WHERE meeting_id=?",
+        [meeting_id]).fetchone() or (None, None, None)
+    summ = ov[0] if ov[0] is not None else (base[0] or "")
+    agenda = _json.loads(ov[1]) if ov[1] is not None else _json.loads(base[1] or "[]")
+    decisions = _json.loads(ov[2]) if ov[2] is not None else _json.loads(base[2] or "[]")
+    return {"summary": summ, "agenda": agenda, "decisions": decisions,
+            "edited": ov[0] is not None or ov[1] is not None or ov[2] is not None}
+
+
+def save_summary_override(con, meeting_id: str, summary: str,
+                          agenda: list[str], decisions: list[str]) -> None:
+    """사람이 수정한 회의록 저장(override). 재실행에도 보존."""
+    import json as _json
+    con.execute(
+        "INSERT INTO meeting_summary_override VALUES (?, ?, ?, ?, now()) "
+        "ON CONFLICT (meeting_id) DO UPDATE SET summary=excluded.summary, "
+        "agenda=excluded.agenda, decisions=excluded.decisions, updated_at=now()",
+        [meeting_id, summary,
+         _json.dumps(agenda, ensure_ascii=False), _json.dumps(decisions, ensure_ascii=False)])
 
 
 def upsert_utterances(con, meeting_id: str, items: list[Utterance]) -> None:
