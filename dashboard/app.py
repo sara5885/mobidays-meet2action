@@ -58,16 +58,28 @@ if not config.DB_PATH.exists():
 con = duckdb.connect(str(config.DB_PATH), read_only=True)
 meetings = con.execute("SELECT * FROM meetings ORDER BY date").pl()
 # 추출(action_items) + 트래킹(action_status) 조인 → 상태는 사람이 관리하는 값
-items = con.execute("""
-    SELECT a.meeting_id, a.action_id, a.action_key, a.title, a.due,
-           a.confidence, a.source_seg_ids, a.source_quote,
-           -- 담당자: 사람이 고친 값(owner_override) 우선, 없으면 AI 추출값
-           COALESCE(s.owner_override, a.owner_role) AS owner_role,
-           a.owner_role AS owner_ai,
+# AI 추출 액션아이템 (삭제 표시된 것 제외) + 사람이 수동 추가한 액션아이템
+ai_items = con.execute("""
+    SELECT a.meeting_id, a.action_id, a.action_key,
+           COALESCE(s.due_override, a.due) AS due, a.due AS due_ai,
+           a.confidence, a.source_quote, FALSE AS manual,
+           COALESCE(s.title_override, a.title) AS title, a.title AS title_ai,
+           COALESCE(s.owner_override, a.owner_role) AS owner_role, a.owner_role AS owner_ai,
            COALESCE(s.status, 'open') AS status, s.delay_reason
-    FROM action_items a
-    LEFT JOIN action_status s USING (action_key)
+    FROM action_items a LEFT JOIN action_status s USING (action_key)
+    WHERE NOT COALESCE(s.deleted, FALSE)
 """).pl()
+man_items = con.execute("""
+    SELECT m.meeting_id, 100000 AS action_id, m.action_key,
+           COALESCE(s.due_override, m.due) AS due, m.due AS due_ai,
+           1.0 AS confidence, '(수동 추가)' AS source_quote, TRUE AS manual,
+           COALESCE(s.title_override, m.title) AS title, m.title AS title_ai,
+           COALESCE(s.owner_override, m.owner_role) AS owner_role, m.owner_role AS owner_ai,
+           COALESCE(s.status, 'open') AS status, s.delay_reason
+    FROM manual_items m LEFT JOIN action_status s USING (action_key)
+    WHERE NOT COALESCE(s.deleted, FALSE)
+""").pl()
+items = pl.concat([ai_items, man_items], how="vertical_relaxed") if man_items.height else ai_items
 utt = con.execute(
     "SELECT meeting_id, seg_id, speaker_role, text FROM utterances ORDER BY meeting_id, seg_id").pl()
 con_total = con.execute("SELECT COUNT(*) FROM action_items").fetchone()[0]
@@ -307,12 +319,16 @@ with c2:
         if by_owner.height:
             p = by_owner.to_pandas()
             colors = ["#dc2626", "#ea580c", "#f59e0b", "#3b82f6", "#22a06b", "#9ca3af"]
+            xmax = int(p["cnt"].max())
             fig = go.Figure(go.Bar(x=p["cnt"], y=p["owner_disp"], orientation="h",
-                                   marker_color=colors[:len(p)],
+                                   marker_color=colors[:len(p)], width=0.6,  # 막대 두께 고정
                                    text=[f"{v}건" for v in p["cnt"]], textposition="outside"))
-            fig.update_layout(height=340, margin=dict(t=10, b=10, l=10, r=30),
+            # 담당자 수와 무관하게 행 높이 일정(통일성). x축도 정수 눈금 고정.
+            fig.update_layout(height=70 * len(p) + 70, margin=dict(t=10, b=10, l=10, r=30),
                               yaxis=dict(autorange="reversed"), plot_bgcolor="white",
-                              xaxis=dict(title="미완료 건수", rangemode="tozero"))
+                              bargap=0.4,
+                              xaxis=dict(title="미완료 건수", rangemode="tozero",
+                                         range=[0, xmax + 1], dtick=1))
             st.plotly_chart(fig, use_container_width=True)
         else:
             st.success("미완료 항목이 없습니다.")
@@ -363,12 +379,14 @@ with c4:
         st.plotly_chart(fig, use_container_width=True)
         low = (i_view.filter(pl.col("confidence") < 0.6)
                .sort("confidence").select(["title", "owner_disp", "due", "confidence", "source_quote"]))
-        st.markdown("**검수 필요 (confidence < 0.6)**")
+        st.markdown(f"**검수 필요 (confidence &lt; 0.6) · {low.height}건**", unsafe_allow_html=True)
         if low.height:
+            # 길어지면 미관 해치니 고정 높이 스크롤 박스로 가둠
+            box = st.container(height=180)
             for row in low.iter_rows(named=True):
-                q = (row["source_quote"] or "")[:40]
+                q = (row["source_quote"] or "")[:36]
                 meta_line = f'{row["owner_disp"] or "담당자 미정"} · 기한 {row["due"] or "-"}'
-                st.markdown(
+                box.markdown(
                     f'<div class="quote"><span><b>{row["title"]}</b>'
                     f'<br><span style="color:#888;font-size:12px">{meta_line} · 근거: "{q}…"</span></span>'
                     f'<span class="conf-tag">conf {row["confidence"]:.2f}</span></div>',
@@ -379,10 +397,7 @@ with c4:
 # ── 액션아이템 상태 관리 (진행상황 업데이트 루프) ──
 st.write("")
 with st.container(border=True):
-    st.markdown('<div class="wtitle">✏️ 액션아이템 상태 관리</div>'
-                '<div class="wsub">담당자가 진행상황을 갱신 → 추이/미완료 위젯에 반영. '
-                '변경은 트래킹 레이어(action_status)에 저장되어 파이프라인 재실행에도 보존됩니다.</div>',
-                unsafe_allow_html=True)
+    st.markdown('<div class="wtitle">✏️ 액션아이템 상태 관리</div>', unsafe_allow_html=True)
 
     STATUS_OPTS = ["open", "in_progress", "done", "blocked"]
     STATUS_KR = {"open": "⬜ 대기", "in_progress": "🔵 진행중",
@@ -405,31 +420,67 @@ with st.container(border=True):
                 return p["employee_id"]
         return NONE
 
-    st.caption("담당자는 DB 직원 중에서 선택합니다(자유 입력 불가). 상태가 ‘지연’일 때만 사유를 입력합니다. "
-               "변경은 트래킹 레이어에 보존됩니다.")
-    rows = i_view.sort(["meeting_id", "action_id"]).to_dicts()
-    h1, h2, h3, h4 = st.columns([2.6, 1.6, 1.1, 1.5])
-    h1.caption("액션아이템"); h2.caption("담당자"); h3.caption("상태"); h4.caption("지연 사유")
-    for r in rows:
+    rows = i_view.to_dicts()
+    st.caption("담당자·제목·상태를 수정하고 저장하세요. 🗑로 잘못된 항목을 삭제, ➕로 직접 추가할 수 있습니다 "
+               "(추가·삭제·수정 모두 재실행에도 보존).")
+
+    def _render_item(r):
         ck = r["action_key"]
-        col1, col2, col3, col4 = st.columns([2.6, 1.6, 1.1, 1.5])
-        col1.markdown(f"**{r['title']}**<br><span style='color:#888;font-size:12px'>"
-                      f"{r['advertiser']} · 기한 {r['due'] or '-'}</span>",
-                      unsafe_allow_html=True)
+        c1, c2, c3, c4, c5 = st.columns([1.6, 2.6, 1.0, 1.1, 0.4])
         cur_eid = _cur_empid(r["meeting_id"], r["owner_role"])
-        col2.selectbox("담당자", OWNER_OPTS,
-                       index=OWNER_OPTS.index(cur_eid) if cur_eid in OWNER_OPTS else 0,
-                       format_func=_owner_label, key=f"ow_{ck}", label_visibility="collapsed")
+        c1.selectbox("담당자", OWNER_OPTS,
+                     index=OWNER_OPTS.index(cur_eid) if cur_eid in OWNER_OPTS else 0,
+                     format_func=_owner_label, key=f"ow_{ck}", label_visibility="collapsed")
+        c2.text_input("할 일", value=r["title"], key=f"ti_{ck}", label_visibility="collapsed")
+        c3.text_input("기한", value=r["due"] or "", key=f"du_{ck}",
+                      label_visibility="collapsed", placeholder="기한")
         cur = r["status"] if r["status"] in STATUS_OPTS else "open"
-        new = col3.selectbox("상태", STATUS_OPTS, index=STATUS_OPTS.index(cur),
-                             format_func=lambda s: STATUS_KR[s],
-                             key=f"st_{ck}", label_visibility="collapsed")
-        # 지연(blocked)일 때만 사유 입력칸 표시 (form이 없어 선택 즉시 반영)
-        if new == "blocked":
-            col4.text_input("지연 사유", value=r.get("delay_reason") or "",
-                            key=f"rs_{ck}", label_visibility="collapsed", placeholder="지연 사유")
+        new = c4.selectbox("상태", STATUS_OPTS, index=STATUS_OPTS.index(cur),
+                           format_func=lambda s: STATUS_KR[s],
+                           key=f"st_{ck}", label_visibility="collapsed")
+        if c5.button("🗑", key=f"del_{ck}", help="이 액션아이템 삭제"):
+            wcon = db.connect(); db.set_deleted(wcon, ck, True); wcon.close()
+            st.rerun()
+        if not r["manual"]:
+            c2.markdown(f"<span style='color:#aaa;font-size:11px'>신뢰도 {r['confidence']:.2f}</span>",
+                        unsafe_allow_html=True)
         else:
-            col4.markdown("<span style='color:#ccc;font-size:12px'>—</span>", unsafe_allow_html=True)
+            c2.markdown("<span style='color:#aaa;font-size:11px'>✍ 수동 추가</span>",
+                        unsafe_allow_html=True)
+        if new == "blocked":
+            c2.text_input("지연 사유", value=r.get("delay_reason") or "",
+                          key=f"rs_{ck}", label_visibility="collapsed", placeholder="⛔ 지연 사유")
+
+    # 광고주 필터(i_view)에 해당하는 회의만 표시. 회의별 묶음 + 추가 폼
+    for mid in m_view.sort("date")["meeting_id"].to_list():
+        mrows = [r for r in rows if r["meeting_id"] == mid]
+        mr = m_view.filter(pl.col("meeting_id") == mid).to_dicts()[0]
+        st.markdown(f"##### 🗂 {mr['advertiser'] or mid} · {mr['date']}　"
+                    f"<span style='color:#888;font-size:13px'>{mr['title'] or ''}</span>",
+                    unsafe_allow_html=True)
+        # 미정(맨 아래) 정렬: owner 환산 후 정렬
+        for r in sorted(mrows, key=lambda x: (_cur_empid(mid, x["owner_role"]) == NONE,
+                                              _owner_label(_cur_empid(mid, x["owner_role"])),
+                                              x["action_id"])):
+            _render_item(r)
+        with st.expander("➕ 액션아이템 추가"):
+            a1, a2, a3 = st.columns([1.7, 3.0, 1.2])
+            add_owner = a1.selectbox("담당자", OWNER_OPTS, format_func=_owner_label,
+                                     key=f"add_ow_{mid}", label_visibility="collapsed")
+            add_title = a2.text_input("할 일", key=f"add_ti_{mid}", label_visibility="collapsed",
+                                      placeholder="새 액션아이템")
+            add_due = a3.text_input("기한", key=f"add_due_{mid}", label_visibility="collapsed",
+                                    placeholder="기한")
+            if st.button("추가", key=f"add_btn_{mid}"):
+                if add_title.strip():
+                    wcon = db.connect()
+                    db.add_manual_item(wcon, mid, add_title,
+                                       None if add_owner == NONE else add_owner, add_due)
+                    wcon.close()
+                    st.rerun()
+                else:
+                    st.warning("할 일을 입력하세요.")
+        st.markdown("---")
 
     if st.button("💾 변경사항 저장"):
         wcon = db.connect()
@@ -437,15 +488,21 @@ with st.container(border=True):
         for r in rows:
             ck = r["action_key"]
             new = st.session_state.get(f"st_{ck}", r["status"])
-            owner_sel = st.session_state.get(f"ow_{ck}", NONE)
-            owner_val = "" if owner_sel == NONE else owner_sel  # 직원id 저장
             reason = st.session_state.get(f"rs_{ck}", "") if new == "blocked" else ""
+            title_edit = st.session_state.get(f"ti_{ck}", r["title"]).strip()
+            title_val = "" if title_edit == r["title_ai"] else title_edit
+            due_edit = st.session_state.get(f"du_{ck}", r["due"] or "").strip()
+            due_val = "" if due_edit == (r["due_ai"] or "") else due_edit
+            owner_sel = st.session_state.get(f"ow_{ck}", NONE)
+            owner_val = "" if owner_sel == NONE else owner_sel
             cur_owner_eid = _cur_empid(r["meeting_id"], r["owner_role"])
-            changed = (new != r["status"]
+            changed = (new != r["status"] or title_edit != r["title"]
+                       or due_edit != (r["due"] or "")
                        or owner_sel != cur_owner_eid
                        or (new == "blocked" and reason != (r.get("delay_reason") or "")))
             if changed:
-                db.update_status(wcon, ck, new, reason or None, owner=owner_val, by="dashboard")
+                db.update_status(wcon, ck, new, reason or None,
+                                 owner=owner_val, title=title_val, due=due_val, by="dashboard")
                 n += 1
         wcon.close()
         st.success(f"{n}건 저장했습니다." if n else "변경된 항목이 없습니다.")

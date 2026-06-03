@@ -10,13 +10,13 @@
   "by_stage": {
     "summary": {
       "calls": 1,
-      "seconds": 1.3208002201281488e-05,
+      "seconds": 1.2207994586788118e-05,
       "prompt_tokens": 0,
       "completion_tokens": 0
     },
     "extract": {
       "calls": 1,
-      "seconds": 1.0000003385357559e-05,
+      "seconds": 1.1208001524209976e-05,
       "prompt_tokens": 0,
       "completion_tokens": 0
     }

@@ -88,8 +88,21 @@ CREATE TABLE IF NOT EXISTS action_status (
     status         VARCHAR DEFAULT 'open',
     delay_reason   VARCHAR,
     owner_override VARCHAR,   -- 사람이 직접 고친 담당자 (재실행에도 보존)
+    title_override VARCHAR,   -- 사람이 직접 고친 액션아이템 제목 (재실행에도 보존)
+    due_override   VARCHAR,   -- 사람이 직접 고친 기한(문자열) (재실행에도 보존)
+    deleted        BOOLEAN DEFAULT FALSE,  -- 사람이 삭제(숨김) 표시. 재실행해도 유지
     updated_at     TIMESTAMP,
     updated_by     VARCHAR
+);
+-- 사람이 직접 추가한 액션아이템 (AI 추출과 별개라 재실행에도 보존)
+CREATE TABLE IF NOT EXISTS manual_items (
+    action_key  VARCHAR PRIMARY KEY,
+    meeting_id  VARCHAR,
+    title       VARCHAR,
+    owner_role  VARCHAR,
+    due         VARCHAR,
+    created_at  TIMESTAMP,
+    created_by  VARCHAR
 );
 CREATE SEQUENCE IF NOT EXISTS seq_status_history START 1;
 CREATE TABLE IF NOT EXISTS status_history (
@@ -139,6 +152,9 @@ def connect() -> duckdb.DuckDBPyConnection:
     con.execute(SCHEMA)
     # 기존 DB 호환: 컬럼이 없으면 추가 (스키마 진화)
     con.execute("ALTER TABLE action_status ADD COLUMN IF NOT EXISTS owner_override VARCHAR")
+    con.execute("ALTER TABLE action_status ADD COLUMN IF NOT EXISTS title_override VARCHAR")
+    con.execute("ALTER TABLE action_status ADD COLUMN IF NOT EXISTS deleted BOOLEAN DEFAULT FALSE")
+    con.execute("ALTER TABLE action_status ADD COLUMN IF NOT EXISTS due_override VARCHAR")
     seed_employees(con)
     return con
 
@@ -273,35 +289,71 @@ def upsert_action_items(con, meeting_id: str, items: list[ActionItem]) -> None:
 _KEEP = object()  # owner 인자 미지정 표시 (None=담당자 비우기와 구분)
 
 
-def update_status(con, action_key: str, new_status: str,
-                  reason: str | None = None, owner=_KEEP, by: str = "dashboard") -> None:
-    """상태 변경 + (선택)담당자 override + 이력 기록. blocked일 때만 delay_reason 저장.
+def update_status(con, action_key: str, new_status: str, reason: str | None = None,
+                  owner=_KEEP, title=_KEEP, due=_KEEP, by: str = "dashboard") -> None:
+    """상태 변경 + (선택)담당자/제목/기한 override + 이력 기록. blocked일 때만 delay_reason 저장.
 
-    owner: 미지정(_KEEP)이면 담당자 유지, 문자열이면 그 값으로 덮어씀, ''/None이면 AI값 사용으로 되돌림.
+    owner/title/due: 미지정(_KEEP)이면 기존값 유지, 문자열이면 덮어씀, ''/None이면 AI값으로 되돌림.
     """
     if new_status not in VALID_STATUSES:
         raise ValueError(f"허용되지 않는 상태: {new_status}")
     row = con.execute(
-        "SELECT status FROM action_status WHERE action_key = ?", [action_key]).fetchone()
+        "SELECT status, owner_override, title_override, due_override FROM action_status WHERE action_key=?",
+        [action_key]).fetchone()
     old = row[0] if row else None
     reason = reason if new_status == "blocked" else None
-    owner_norm = None if (owner in (None, "")) else str(owner).strip() if owner is not _KEEP else _KEEP
 
-    if row:
-        if owner_norm is _KEEP:
-            con.execute(
-                "UPDATE action_status SET status=?, delay_reason=?, updated_at=now(), updated_by=?"
-                " WHERE action_key=?", [new_status, reason, by, action_key])
-        else:
-            con.execute(
-                "UPDATE action_status SET status=?, delay_reason=?, owner_override=?,"
-                " updated_at=now(), updated_by=? WHERE action_key=?",
-                [new_status, reason, owner_norm, by, action_key])
-    else:
-        con.execute(
-            "INSERT INTO action_status (action_key, status, delay_reason, owner_override, updated_at, updated_by)"
-            " VALUES (?, ?, ?, ?, now(), ?)",
-            [action_key, new_status, reason, (None if owner_norm is _KEEP else owner_norm), by])
+    def _resolve(val, cur):
+        if val is _KEEP:
+            return cur
+        return None if val in (None, "") else str(val).strip()
+
+    owner_v = _resolve(owner, row[1] if row else None)
+    title_v = _resolve(title, row[2] if row else None)
+    due_v = _resolve(due, row[3] if row else None)
+
+    con.execute(
+        "INSERT INTO action_status "
+        "(action_key, meeting_id, status, delay_reason, owner_override, title_override, due_override, updated_at, updated_by) "
+        "VALUES (?, NULL, ?, ?, ?, ?, ?, now(), ?) "
+        "ON CONFLICT (action_key) DO UPDATE SET status=excluded.status, "
+        "delay_reason=excluded.delay_reason, owner_override=excluded.owner_override, "
+        "title_override=excluded.title_override, due_override=excluded.due_override, "
+        "updated_at=now(), updated_by=excluded.updated_by",
+        [action_key, new_status, reason, owner_v, title_v, due_v, by])
     con.execute(
         "INSERT INTO status_history (action_key, old_status, new_status, reason, changed_at, changed_by)"
         " VALUES (?, ?, ?, ?, now(), ?)", [action_key, old, new_status, reason, by])
+
+
+def set_deleted(con, action_key: str, deleted: bool = True, by: str = "dashboard") -> None:
+    """액션아이템 삭제(숨김) 표시. 진짜 지우지 않아 재실행에도 유지."""
+    con.execute(
+        "INSERT INTO action_status (action_key, status, deleted, updated_at, updated_by) "
+        "VALUES (?, 'open', ?, now(), ?) "
+        "ON CONFLICT (action_key) DO UPDATE SET deleted=excluded.deleted, "
+        "updated_at=now(), updated_by=excluded.updated_by",
+        [action_key, deleted, by])
+
+
+def add_manual_item(con, meeting_id: str, title: str, owner_role: str | None,
+                    due: str | None, by: str = "dashboard") -> str:
+    """사람이 액션아이템 직접 추가. action_key='manual-<uuid>'. 재실행에도 보존."""
+    import uuid
+    key = "manual-" + uuid.uuid4().hex[:12]
+    con.execute(
+        "INSERT INTO manual_items VALUES (?, ?, ?, ?, ?, now(), ?)",
+        [key, meeting_id, title.strip(), (owner_role or None), (due or None), by])
+    # 트래킹 상태행도 생성(기본 open)
+    con.execute(
+        "INSERT INTO action_status (action_key, meeting_id, status, updated_at, updated_by) "
+        "VALUES (?, ?, 'open', now(), ?) ON CONFLICT (action_key) DO NOTHING",
+        [key, meeting_id, by])
+    return key
+
+
+def get_manual_items(con) -> list[dict]:
+    rows = con.execute(
+        "SELECT action_key, meeting_id, title, owner_role, due FROM manual_items").fetchall()
+    return [{"action_key": k, "meeting_id": m, "title": t, "owner_role": o, "due": d}
+            for k, m, t, o, d in rows]
