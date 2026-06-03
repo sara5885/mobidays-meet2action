@@ -155,14 +155,29 @@ def seed_employees(con) -> None:
             "SET name=excluded.name, role=excluded.role, is_adhoc=FALSE", [eid, name, role])
 
 
+def _ensure_column(con, table: str, col: str, coldef: str) -> None:
+    """컬럼이 '진짜로' 없을 때만 ALTER 한다.
+
+    주의: DuckDB(≤1.5.3)에서 `ALTER TABLE ... ADD COLUMN IF NOT EXISTS <col> ... DEFAULT <v>`
+    는 컬럼이 이미 존재해도 no-op 이 아니라, 해당 컬럼을 DEFAULT 값으로 '리셋'해버리는 버그가
+    있다(예: deleted=TRUE 가 매 연결마다 FALSE 로 풀려 삭제가 반영 안 됨). 그래서
+    information_schema 로 존재를 직접 확인하고 없을 때만 ALTER 한다.
+    """
+    existing = {r[0] for r in con.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name=?",
+        [table]).fetchall()}
+    if col not in existing:
+        con.execute(f"ALTER TABLE {table} ADD COLUMN {col} {coldef}")
+
+
 def connect() -> duckdb.DuckDBPyConnection:
     con = duckdb.connect(str(config.DB_PATH))
     con.execute(SCHEMA)
-    # 기존 DB 호환: 컬럼이 없으면 추가 (스키마 진화)
-    con.execute("ALTER TABLE action_status ADD COLUMN IF NOT EXISTS owner_override VARCHAR")
-    con.execute("ALTER TABLE action_status ADD COLUMN IF NOT EXISTS title_override VARCHAR")
-    con.execute("ALTER TABLE action_status ADD COLUMN IF NOT EXISTS deleted BOOLEAN DEFAULT FALSE")
-    con.execute("ALTER TABLE action_status ADD COLUMN IF NOT EXISTS due_override VARCHAR")
+    # 기존 DB 호환: 컬럼이 없을 때만 추가 (스키마 진화). _ensure_column 주석 참고.
+    _ensure_column(con, "action_status", "owner_override", "VARCHAR")
+    _ensure_column(con, "action_status", "title_override", "VARCHAR")
+    _ensure_column(con, "action_status", "deleted", "BOOLEAN DEFAULT FALSE")
+    _ensure_column(con, "action_status", "due_override", "VARCHAR")
     seed_employees(con)
     return con
 
@@ -336,28 +351,42 @@ def update_status(con, action_key: str, new_status: str, reason: str | None = No
     title_v = _resolve(title, row[2] if row else None)
     due_v = _resolve(due, row[3] if row else None)
 
-    con.execute(
-        "INSERT INTO action_status "
-        "(action_key, meeting_id, status, delay_reason, owner_override, title_override, due_override, updated_at, updated_by) "
-        "VALUES (?, NULL, ?, ?, ?, ?, ?, now(), ?) "
-        "ON CONFLICT (action_key) DO UPDATE SET status=excluded.status, "
-        "delay_reason=excluded.delay_reason, owner_override=excluded.owner_override, "
-        "title_override=excluded.title_override, due_override=excluded.due_override, "
-        "updated_at=now(), updated_by=excluded.updated_by",
-        [action_key, new_status, reason, owner_v, title_v, due_v, by])
+    # NOTE: INSERT ... ON CONFLICT 를 쓰지 않는다. DuckDB에서 ALTER TABLE 로 추가된
+    # DEFAULT 컬럼(deleted)이 있는 테이블에 UPSERT 하면, 충돌 대상이 '아닌' 다른 행의
+    # deleted 플래그까지 기본값으로 되돌려버리는 버그가 있다(삭제가 풀려버림).
+    # → 존재 여부를 먼저 확인하고 UPDATE/INSERT 로 분기한다(영향 행을 명확히 한정).
+    if row:
+        con.execute(
+            "UPDATE action_status SET status=?, delay_reason=?, owner_override=?, "
+            "title_override=?, due_override=?, updated_at=now(), updated_by=? WHERE action_key=?",
+            [new_status, reason, owner_v, title_v, due_v, by, action_key])
+    else:
+        con.execute(
+            "INSERT INTO action_status "
+            "(action_key, meeting_id, status, delay_reason, owner_override, title_override, due_override, updated_at, updated_by) "
+            "VALUES (?, NULL, ?, ?, ?, ?, ?, now(), ?)",
+            [action_key, new_status, reason, owner_v, title_v, due_v, by])
     con.execute(
         "INSERT INTO status_history (action_key, old_status, new_status, reason, changed_at, changed_by)"
         " VALUES (?, ?, ?, ?, now(), ?)", [action_key, old, new_status, reason, by])
 
 
 def set_deleted(con, action_key: str, deleted: bool = True, by: str = "dashboard") -> None:
-    """액션아이템 삭제(숨김) 표시. 진짜 지우지 않아 재실행에도 유지."""
-    con.execute(
-        "INSERT INTO action_status (action_key, status, deleted, updated_at, updated_by) "
-        "VALUES (?, 'open', ?, now(), ?) "
-        "ON CONFLICT (action_key) DO UPDATE SET deleted=excluded.deleted, "
-        "updated_at=now(), updated_by=excluded.updated_by",
-        [action_key, deleted, by])
+    """액션아이템 삭제(숨김) 표시. 진짜 지우지 않아 재실행에도 유지.
+
+    UPSERT(ON CONFLICT) 대신 존재 확인 후 UPDATE/INSERT. (update_status 주석 참고:
+    ALTER 로 추가한 DEFAULT 컬럼 + UPSERT 조합이 다른 행을 오염시키는 DuckDB 버그 회피)
+    """
+    exists = con.execute(
+        "SELECT 1 FROM action_status WHERE action_key=?", [action_key]).fetchone()
+    if exists:
+        con.execute(
+            "UPDATE action_status SET deleted=?, updated_at=now(), updated_by=? WHERE action_key=?",
+            [deleted, by, action_key])
+    else:
+        con.execute(
+            "INSERT INTO action_status (action_key, status, deleted, updated_at, updated_by) "
+            "VALUES (?, 'open', ?, now(), ?)", [action_key, deleted, by])
 
 
 def add_manual_item(con, meeting_id: str, title: str, owner_role: str | None,

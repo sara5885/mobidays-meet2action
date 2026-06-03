@@ -30,8 +30,11 @@ st.set_page_config(page_title="회의 분석 대시보드", layout="wide", page_
 
 st.markdown("""
 <style>
-  .block-container {padding-top: 2rem; max-width: 1240px;}
-  .kpi {background:#fff; border:1px solid #ececf0; border-radius:14px; padding:16px 18px;}
+  .block-container {padding-top: 3.5rem; max-width: 1240px;}
+  /* 위젯(특히 상태관리 행) 세로 간격 축소 */
+  div[data-testid="stVerticalBlock"] {gap: 0.45rem;}
+  .kpi {background:#fff; border:1px solid #ececf0; border-radius:14px; padding:16px 18px;
+        min-height:104px; display:flex; flex-direction:column; justify-content:center;}
   .kpi .label {font-size:13px; color:#6b7280;}
   .kpi .value {font-size:30px; font-weight:700; color:#111827; line-height:1.3;}
   .kpi .delta-up {font-size:12px; color:#16a34a;}
@@ -131,11 +134,11 @@ items = items.with_columns(
                     return_dtype=pl.String).alias("owner_disp"))
 
 # ── 헤더 + 필터 ──
-hl, hr = st.columns([3, 1])
-hl.markdown("### 📋 회의 분석 대시보드")
-hl.caption("모비데이즈 AI Lab · 회의 transcript → 액션아이템 자동 추출")
+st.markdown("## 📋 회의 분석 대시보드")
+st.caption("모비데이즈 AI Lab · 회의록 자동 정리부터 액션아이템 추출·진행 관리까지 한 화면에서")
 advertisers = ["(전체)"] + sorted([a for a in meetings["advertiser"].unique().to_list() if a])
-sel_adv = hr.selectbox("광고주", advertisers, label_visibility="collapsed")
+_, fcol = st.columns([3, 1])
+sel_adv = fcol.selectbox("광고주 필터", advertisers)
 
 m_view = meetings if sel_adv == "(전체)" else meetings.filter(pl.col("advertiser") == sel_adv)
 mids = m_view["meeting_id"].to_list()
@@ -200,11 +203,10 @@ def kpi(col, label, value, sub=""):
                  unsafe_allow_html=True)
 
 
-k1, k2, k3 = st.columns(3)
+k1, k2 = st.columns(2)
 kpi(k1, "회의 수", m_view.height)
-kpi(k2, "액션아이템", total_ai)
-kpi(k3, "진행 (완료/전체)", f"{done_cnt}/{total_ai}", f"완료율 {rate}%")
-st.write("")
+kpi(k2, "액션아이템 (완료/전체)", f"{done_cnt}/{total_ai}", f"완료율 {rate}%")
+st.markdown("<div style='height:18px'></div>", unsafe_allow_html=True)
 
 # ── 📄 회의록 (목록 → 클릭 → 상세). 가독성 위해 기본은 목록만 표시 ──
 if "sel_meeting" not in st.session_state:
@@ -231,7 +233,7 @@ with st.container(border=True):
         for r in m_view.sort("date", descending=True).iter_rows(named=True):
             mid = r["meeting_id"]
             n_items, n_open = _cnt_map.get(mid, (0, 0))
-            c1_, c2_, c3_ = st.columns([5, 2, 1.2])
+            c1_, c2_, c3_ = st.columns([5, 2, 1.2], vertical_alignment="center")
             c1_.markdown(f"**{r['title'] or mid}**　"
                          f"<span style='color:#888;font-size:12px'>{r['advertiser'] or '—'} · {r['date']}</span>",
                          unsafe_allow_html=True)
@@ -330,7 +332,9 @@ with c1:
 
 with c2:
     with st.container(border=True):
-        st.markdown('<div class="wtitle">담당자별 미완료 Top N</div>', unsafe_allow_html=True)
+        st.markdown('<div class="wtitle">담당자별 미완료 Top N</div>'
+                    '<div class="wsub">미완료 건수 기준 상위 담당자 · 업무 재분배 참고</div>',
+                    unsafe_allow_html=True)
         open_items = i_view.filter(pl.col("status") != "done")
         by_owner = (open_items.with_columns(pl.col("owner_disp").fill_null("담당자 미정"))
                     .group_by("owner_disp").agg(pl.len().alias("cnt"))
@@ -405,8 +409,9 @@ if True:
             low = (i_view.filter(pl.col("confidence") < 0.6)
                    .with_columns(pl.col("meeting_id").replace_strict(adv_map, default="(미상)").alias("adv"))
                    .sort("confidence"))
-            st.markdown(f"**검수 권장 · {low.height}건** <span style='color:#888;font-size:12px'>"
-                        f"(아래 상태 관리에서 처리)</span>", unsafe_allow_html=True)
+            st.markdown(f"<div style='margin:-6px 0 10px 0'><b>검수 권장 · {low.height}건</b> "
+                        f"<span style='color:#888;font-size:12px'>(아래 상태 관리에서 처리)</span></div>",
+                        unsafe_allow_html=True)
             if low.height:
                 box = st.container(height=190)
                 for row in low.iter_rows(named=True):
@@ -445,43 +450,48 @@ with st.container(border=True):
         return NONE
 
     rows = i_view.to_dicts()
-    st.caption("담당자·제목·상태를 수정하고 저장하세요. 🗑로 잘못된 항목을 삭제, ➕로 직접 추가할 수 있습니다 "
-               "(추가·삭제·수정 모두 재실행에도 보존).")
+    st.caption("담당자·제목·기한·상태를 고친 뒤 아래 ‘변경사항 검토 → 확정 저장’으로 반영하세요. "
+               "🗑는 삭제 예정 표시(저장 시 반영), ➕는 새 항목 추가. (추가·삭제·수정 모두 재실행에도 보존).")
 
     def _render_item(r):
         ck = r["action_key"]
-        # row 위 왼쪽: 이 액션아이템(행 전체)의 신뢰도 — 낮으면 빨강
-        if r["manual"]:
-            st.markdown("<span style='color:#aaa;font-size:11px'>✍ 수동 추가 항목</span>",
-                        unsafe_allow_html=True)
+        cur = r["status"] if r["status"] in STATUS_OPTS else "open"
+        # 신뢰도: 아직 손대지 않은(open) 항목만 낮으면 ⚠. 이미 검수/처리(진행·완료·지연)면 경고 안 띄움.
+        # 신뢰도/표시는 작은 '배지'로 — 배경을 줘서 옅게 묻히지 않고 또렷하게 보이게.
+        marked = ck in st.session_state.get("delmark", set())
+        badge = "display:inline-block;padding:2px 8px;border-radius:7px;font-size:12px;font-weight:600;"
+        if marked:
+            note = f"<span style='{badge}background:#fdecec;color:#c0392b'>🗑 삭제 예정 — 저장 시 반영</span>"
+        elif r["manual"]:
+            note = f"<span style='{badge}background:#eef0f3;color:#6b7280'>✍ 수동 추가</span>"
+        elif cur == "open" and r["confidence"] < 0.6:
+            note = (f"<span style='{badge}background:#fdecec;color:#c0392b'>"
+                    f"신뢰도 {r['confidence']:.2f} ⚠ 검수 권장</span>")
         else:
-            low_conf = r["confidence"] < 0.6
-            color, warn = ("#dc2626", " ⚠ 검수 권장") if low_conf else ("#aaa", "")
-            st.markdown(f"<span style='color:{color};font-size:11px'>신뢰도 {r['confidence']:.2f}{warn}</span>",
-                        unsafe_allow_html=True)
-        c1, c2, c3, c4, c5 = st.columns([1.6, 2.6, 1.0, 1.1, 0.4])
+            note = (f"<span style='{badge}background:#eef2f7;color:#3f4a5a'>"
+                    f"신뢰도 {r['confidence']:.2f}</span>")
+        # 신뢰도는 담당자 칸 '안에' 셀렉트박스 바로 위로 둔다(열 셀 내부라 옆 행에 가려지지 않음).
+        # 나머지 칸은 bottom 정렬 → 모든 입력이 같은 바닥선에 맞춰져 가지런하다.
+        c1, c2, c3, c4, c5 = st.columns([1.6, 2.6, 1.0, 1.1, 0.4], vertical_alignment="bottom")
         cur_eid = _cur_empid(r["meeting_id"], r["owner_role"])
-        c1.selectbox("담당자", OWNER_OPTS,
-                     index=OWNER_OPTS.index(cur_eid) if cur_eid in OWNER_OPTS else 0,
-                     format_func=_owner_label, key=f"ow_{ck}", label_visibility="collapsed")
+        with c1:
+            st.markdown(f"<div style='margin:0 0 4px 1px;line-height:1.5'>{note}</div>",
+                        unsafe_allow_html=True)
+            st.selectbox("담당자", OWNER_OPTS,
+                         index=OWNER_OPTS.index(cur_eid) if cur_eid in OWNER_OPTS else 0,
+                         format_func=_owner_label, key=f"ow_{ck}", label_visibility="collapsed")
         c2.text_input("할 일", value=r["title"], key=f"ti_{ck}", label_visibility="collapsed")
         c3.text_input("기한", value=r["due"] or "", key=f"du_{ck}",
                       label_visibility="collapsed", placeholder="기한")
-        cur = r["status"] if r["status"] in STATUS_OPTS else "open"
         new = c4.selectbox("상태", STATUS_OPTS, index=STATUS_OPTS.index(cur),
                            format_func=lambda s: STATUS_KR[s],
                            key=f"st_{ck}", label_visibility="collapsed")
-        if c5.button("🗑", key=f"del_{ck}", help="이 액션아이템 삭제"):
-            wcon = db.connect(); db.set_deleted(wcon, ck, True); wcon.close()
+        # 삭제도 '검토 후 저장' 흐름에 태운다(즉시 삭제 X). 토글로 표시/해제.
+        if c5.button("↩" if marked else "🗑", key=f"del_{ck}",
+                     help="삭제 취소" if marked else "삭제 예정으로 표시 (검토 후 저장 시 반영)"):
+            s = st.session_state.setdefault("delmark", set())
+            s.discard(ck) if ck in s else s.add(ck)
             st.rerun()
-        # 지연(blocked)일 때만 사유칸 — '할 일' 열 아래에 라벨과 함께 (빈 액션처럼 안 보이게)
-        if new == "blocked":
-            rc1, rc2 = st.columns([1.6, 4.5])
-            rc1.markdown("<span style='color:#dc2626;font-size:12px'>⛔ 지연 사유</span>",
-                         unsafe_allow_html=True)
-            rc2.text_input("지연 사유", value=r.get("delay_reason") or "",
-                           key=f"rs_{ck}", label_visibility="collapsed", placeholder="예: 광고주 컨펌 지연")
-        st.markdown("<div style='margin-bottom:6px'></div>", unsafe_allow_html=True)
 
     # 광고주 필터(i_view)에 해당하는 회의만 표시. 회의별 묶음 + 추가 폼
     for mid in m_view.sort("date")["meeting_id"].to_list():
@@ -514,30 +524,70 @@ with st.container(border=True):
                     st.warning("할 일을 입력하세요.")
         st.markdown("---")
 
-    if st.button("💾 변경사항 저장"):
-        wcon = db.connect()
-        n = 0
+    # 1단계: 현재 편집값(session_state)을 DB값과 비교해 변경 내역을 모은다
+    def _collect_changes():
+        pending = []
+        delmark = st.session_state.get("delmark", set())
         for r in rows:
             ck = r["action_key"]
+            # 삭제 예정이면 다른 편집과 무관하게 '삭제'만 변경내역으로 잡는다.
+            if ck in delmark:
+                pending.append({"ck": ck, "label": r["title"], "diffs": ["🗑 삭제"],
+                                "delete": True})
+                continue
             new = st.session_state.get(f"st_{ck}", r["status"])
-            reason = st.session_state.get(f"rs_{ck}", "") if new == "blocked" else ""
-            title_edit = st.session_state.get(f"ti_{ck}", r["title"]).strip()
-            title_val = "" if title_edit == r["title_ai"] else title_edit
-            due_edit = st.session_state.get(f"du_{ck}", r["due"] or "").strip()
-            due_val = "" if due_edit == (r["due_ai"] or "") else due_edit
+            title_edit = (st.session_state.get(f"ti_{ck}", r["title"]) or "").strip()
+            due_edit = (st.session_state.get(f"du_{ck}", r["due"] or "") or "").strip()
             owner_sel = st.session_state.get(f"ow_{ck}", NONE)
-            owner_val = "" if owner_sel == NONE else owner_sel
             cur_owner_eid = _cur_empid(r["meeting_id"], r["owner_role"])
-            changed = (new != r["status"] or title_edit != r["title"]
-                       or due_edit != (r["due"] or "")
-                       or owner_sel != cur_owner_eid
-                       or (new == "blocked" and reason != (r.get("delay_reason") or "")))
-            if changed:
-                db.update_status(wcon, ck, new, reason or None,
-                                 owner=owner_val, title=title_val, due=due_val, by="dashboard")
-                n += 1
-        wcon.close()
-        st.success(f"{n}건 저장했습니다." if n else "변경된 항목이 없습니다.")
+            diffs = []
+            if new != r["status"]:
+                diffs.append(f"상태 {STATUS_KR[r['status']]} → {STATUS_KR[new]}")
+            if owner_sel != cur_owner_eid:
+                diffs.append(f"담당자 {_owner_label(cur_owner_eid)} → {_owner_label(owner_sel)}")
+            if title_edit != r["title"]:
+                diffs.append(f"제목 → {title_edit}")
+            if due_edit != (r["due"] or ""):
+                diffs.append(f"기한 → {due_edit or '(없음)'}")
+            if diffs:
+                pending.append({
+                    "ck": ck, "label": r["title"], "diffs": diffs, "status": new,
+                    "delete": False,
+                    "owner": "" if owner_sel == NONE else owner_sel,
+                    "title": "" if title_edit == r["title_ai"] else title_edit,
+                    "due": "" if due_edit == (r["due_ai"] or "") else due_edit})
+        return pending
+
+    if st.button("🔍 변경사항 검토"):
+        st.session_state["pending_changes"] = _collect_changes()
         st.rerun()
+
+    pending = st.session_state.get("pending_changes")
+    if pending is not None:
+        if pending:
+            st.markdown(f"**변경 예정 · {len(pending)}건** — 확인 후 저장하세요")
+            for p in pending:
+                st.markdown(f"- **{p['label']}**: " + " / ".join(p["diffs"]))
+            cc1, cc2, _ = st.columns([1, 1, 3])
+            if cc1.button("✅ 확정 저장"):
+                wcon = db.connect()
+                for p in pending:
+                    if p.get("delete"):
+                        db.set_deleted(wcon, p["ck"], True)
+                    else:
+                        db.update_status(wcon, p["ck"], p["status"],
+                                         owner=p["owner"], title=p["title"], due=p["due"],
+                                         by="dashboard")
+                wcon.close()
+                st.session_state.pop("pending_changes", None)
+                st.session_state.pop("delmark", None)
+                st.success(f"{len(pending)}건 저장했습니다.")
+                st.rerun()
+            if cc2.button("취소"):
+                st.session_state.pop("pending_changes", None)
+                st.rerun()
+        else:
+            st.info("변경된 항목이 없습니다.")
+            st.session_state.pop("pending_changes", None)
 
 st.caption(f"DB: {config.DB_PATH.name} · 회의 {meetings.height}건 · 액션아이템 {con_total}건")
