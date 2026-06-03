@@ -426,7 +426,8 @@ if True:
 # ── 액션아이템 상태 관리 (진행상황 업데이트 루프) ──
 st.write("")
 with st.container(border=True):
-    st.markdown('<div class="wtitle">✏️ 액션아이템 상태 관리</div>', unsafe_allow_html=True)
+    st.markdown('<div class="wtitle" style="font-size:20px">✏️ 액션아이템 상태 관리</div>',
+                unsafe_allow_html=True)
 
     STATUS_OPTS = ["open", "in_progress", "done", "blocked"]
     STATUS_KR = {"open": "⬜ 대기", "in_progress": "🔵 진행중",
@@ -450,8 +451,8 @@ with st.container(border=True):
         return NONE
 
     rows = i_view.to_dicts()
-    st.caption("담당자·제목·기한·상태를 고친 뒤 아래 ‘변경사항 검토 → 확정 저장’으로 반영하세요. "
-               "🗑는 삭제 예정 표시(저장 시 반영), ➕는 새 항목 추가. (추가·삭제·수정 모두 재실행에도 보존).")
+    st.caption("담당자·제목·기한·상태를 고친 뒤 아래 ‘변경사항 검토 및 저장’으로 반영하세요. "
+               "🗑는 삭제 예정 표시, ➕는 새 항목 추가.")
 
     def _render_item(r):
         ck = r["action_key"]
@@ -506,27 +507,44 @@ with st.container(border=True):
                                               x["action_id"])):
             _render_item(r)
         with st.expander("➕ 액션아이템 추가"):
+            # 추가도 '검토 후 저장' 흐름에 태운다. (입력 후 추가 예정에 담고, 확정 저장 시 DB 반영)
+            nonce = st.session_state.get(f"addnonce_{mid}", 0)
             a1, a2, a3 = st.columns([1.7, 3.0, 1.2])
             add_owner = a1.selectbox("담당자", OWNER_OPTS, format_func=_owner_label,
-                                     key=f"add_ow_{mid}", label_visibility="collapsed")
-            add_title = a2.text_input("할 일", key=f"add_ti_{mid}", label_visibility="collapsed",
-                                      placeholder="새 액션아이템")
-            add_due = a3.text_input("기한", key=f"add_due_{mid}", label_visibility="collapsed",
-                                    placeholder="기한")
-            if st.button("추가", key=f"add_btn_{mid}"):
+                                     key=f"add_ow_{mid}_{nonce}", label_visibility="collapsed")
+            add_title = a2.text_input("할 일", key=f"add_ti_{mid}_{nonce}",
+                                      label_visibility="collapsed", placeholder="새 액션아이템")
+            add_due = a3.text_input("기한", key=f"add_due_{mid}_{nonce}",
+                                    label_visibility="collapsed", placeholder="기한")
+            if st.button("추가 예정에 담기", key=f"add_btn_{mid}"):
                 if add_title.strip():
-                    wcon = db.connect()
-                    db.add_manual_item(wcon, mid, add_title,
-                                       None if add_owner == NONE else add_owner, add_due)
-                    wcon.close()
+                    st.session_state.setdefault("addqueue", []).append(
+                        {"meeting_id": mid, "title": add_title.strip(),
+                         "owner": None if add_owner == NONE else add_owner,
+                         "due": add_due.strip()})
+                    st.session_state[f"addnonce_{mid}"] = nonce + 1  # 입력칸 초기화
                     st.rerun()
                 else:
                     st.warning("할 일을 입력하세요.")
+            staged = [a for a in st.session_state.get("addqueue", []) if a["meeting_id"] == mid]
+            for j, a in enumerate(staged):
+                sc1, sc2 = st.columns([6, 1], vertical_alignment="center")
+                sc1.markdown(f"<span style='color:#16a34a;font-size:13px'>➕ 추가 예정: "
+                             f"<b>{a['title']}</b> · {_owner_label(a['owner'] or NONE)} · "
+                             f"{a['due'] or '기한 미정'}</span>", unsafe_allow_html=True)
+                if sc2.button("취소", key=f"unadd_{mid}_{j}"):
+                    st.session_state["addqueue"].remove(a)
+                    st.rerun()
         st.markdown("---")
 
     # 1단계: 현재 편집값(session_state)을 DB값과 비교해 변경 내역을 모은다
     def _collect_changes():
         pending = []
+        # 신규 추가(추가 예정 큐) 먼저
+        for a in st.session_state.get("addqueue", []):
+            pending.append({"add": True, "label": a["title"], "diffs": ["➕ 신규 추가"],
+                            "meeting_id": a["meeting_id"], "title_new": a["title"],
+                            "owner": a["owner"], "due": a["due"]})
         delmark = st.session_state.get("delmark", set())
         for r in rows:
             ck = r["action_key"]
@@ -558,7 +576,7 @@ with st.container(border=True):
                     "due": "" if due_edit == (r["due_ai"] or "") else due_edit})
         return pending
 
-    if st.button("🔍 변경사항 검토"):
+    if st.button("🔍 변경사항 검토 및 저장"):
         st.session_state["pending_changes"] = _collect_changes()
         st.rerun()
 
@@ -572,7 +590,10 @@ with st.container(border=True):
             if cc1.button("✅ 확정 저장"):
                 wcon = db.connect()
                 for p in pending:
-                    if p.get("delete"):
+                    if p.get("add"):
+                        db.add_manual_item(wcon, p["meeting_id"], p["title_new"],
+                                           p["owner"], p["due"])
+                    elif p.get("delete"):
                         db.set_deleted(wcon, p["ck"], True)
                     else:
                         db.update_status(wcon, p["ck"], p["status"],
@@ -581,6 +602,7 @@ with st.container(border=True):
                 wcon.close()
                 st.session_state.pop("pending_changes", None)
                 st.session_state.pop("delmark", None)
+                st.session_state.pop("addqueue", None)
                 st.success(f"{len(pending)}건 저장했습니다.")
                 st.rerun()
             if cc2.button("취소"):
