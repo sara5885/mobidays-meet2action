@@ -35,9 +35,26 @@ STOPWORDS = {
     "있는", "없는", "그게요", "근데요", "맞아요", "좋아요", "알겠습니다",
 }
 
-# 뒤에 붙은 조사/호칭을 떼어 어근을 통일 (픽셀을/픽셀이/픽셀은 → 픽셀)
-_JOSA = ("님이", "님", "이랑", "랑", "에서", "한테", "에게", "으로", "로", "에는",
-         "에", "은", "는", "을", "를", "이", "가", "도", "만", "과", "와")
+# 시간/수량 등 이슈와 무관한 흔한 명사(노이즈)
+TIME_WORDS = {
+    "오전", "오후", "오늘", "내일", "어제", "이번", "다음", "지난", "이번주", "다음주",
+    "주차", "월요일", "화요일", "수요일", "목요일", "금요일", "토요일", "일요일",
+    "정도", "쯤", "동안", "기간", "시간", "분기", "부분",
+}
+STOPWORDS |= TIME_WORDS
+
+# 뒤에 붙은 조사/어미를 떼어 어근을 통일 (픽셀을/픽셀이→픽셀, 오전까지→오전)
+_JOSA = ("까지", "부터", "마다", "처럼", "보다", "께서", "이라고", "라고", "에서도",
+         "으로도", "한테서", "님이", "님", "이랑", "랑", "에서", "한테", "에게",
+         "으로", "로", "에는", "에", "은", "는", "을", "를", "이", "가", "도",
+         "만", "과", "와", "의")
+
+# 형태소 분석기(kiwipiepy)가 있으면 명사만 추출(가장 정확). 없으면 정규식 폴백.
+try:  # pragma: no cover
+    from kiwipiepy import Kiwi
+    _kiwi = Kiwi()
+except Exception:
+    _kiwi = None
 
 
 def _strip_josa(tok: str) -> str:
@@ -47,17 +64,29 @@ def _strip_josa(tok: str) -> str:
     return tok
 
 
+def _ok(tok: str) -> bool:
+    return len(tok) >= 2 and tok not in STOPWORDS and tok not in SPEAKER_NAMES
+
+
 def tokenize(text: str) -> list[str]:
+    # 1순위: 형태소 분석기로 일반/고유명사(NNG/NNP)만 → "가는"(동사), "오전까지"(조사) 제거
+    if _kiwi is not None:
+        out = []
+        for tok in _kiwi.tokenize(text):
+            form = tok.form
+            if tok.tag in ("NNG", "NNP", "SL") and _ok(form):  # SL=영문약어
+                out.append(form)
+        return out
+    # 폴백: 정규식 + 조사 제거 + 불용어
     out = []
     for t in _TOKEN_RE.findall(text):
-        if t.isascii():  # 영문 약어는 그대로
-            if t not in STOPWORDS and len(t) >= 2:
+        if t.isascii():
+            if _ok(t):
                 out.append(t)
             continue
         root = _strip_josa(t)
-        if root in STOPWORDS or root in SPEAKER_NAMES or len(root) < 2:
-            continue
-        out.append(root)
+        if _ok(root):
+            out.append(root)
     return out
 
 

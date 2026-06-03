@@ -9,6 +9,7 @@
 주의: 원문 텍스트(utterances.text)는 보존하고, 정제는 '청크 생성 시점'에만 적용한다.
 → 추적성(어떤 원문에서 나왔는지)을 잃지 않기 위함.
 """
+
 from __future__ import annotations
 
 import re

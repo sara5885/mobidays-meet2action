@@ -79,6 +79,32 @@ def _parse_speakers(spec: str) -> list[dict]:
     return roster
 
 
+def _build_bias_prompt(hint, args) -> str:
+    """Whisper 어휘 바이어싱용 initial_prompt (계층형: 공용 도메인 + 회의별 고유어).
+
+    - 공용: 광고 약어 사전(ABBREV) — 모든 회의 공통, 자동
+    - 회의별: 광고주·참석자 이름·제품·캠페인 — 메타데이터에서 자동 조립
+    initial_prompt는 길면 효과↓·토큰 제한(~224) 있어 핵심 위주로 길이 제한.
+    """
+    from meeting_ai.preprocess import ABBREV
+    meeting_terms = []  # 고유명사 우선(앞쪽 배치)
+    if args.advertiser:
+        meeting_terms.append(args.advertiser)
+    if args.campaign:
+        meeting_terms.append(args.campaign)
+    meeting_terms += [p.strip() for p in args.products.split(",") if p.strip()]
+    meeting_terms += [s["name"] for s in (hint or [])]
+    domain_terms = list(ABBREV.keys())
+    # 고유어 먼저 + 도메인 약어, 중복 제거, 길이 제한(약 40개)
+    seen, terms = set(), []
+    for t in meeting_terms + domain_terms:
+        if t and t not in seen:
+            seen.add(t); terms.append(t)
+        if len(terms) >= 40:
+            break
+    return "광고 캠페인 회의 녹취. 자주 쓰는 용어: " + ", ".join(terms)
+
+
 def main() -> None:
     ap = argparse.ArgumentParser()
     ap.add_argument("audio", nargs="?", default=DEFAULT_AUDIO,
@@ -86,6 +112,10 @@ def main() -> None:
     ap.add_argument("--advertiser", default="", help="광고주명(메타데이터)")
     ap.add_argument("--title", default="", help="회의 제목(메타데이터)")
     ap.add_argument("--speakers", default="", help='참석자 명단 "이름:역할,이름:역할"')
+    ap.add_argument("--products", default="", help="제품/브랜드명(쉼표 구분, STT 어휘 바이어싱)")
+    ap.add_argument("--campaign", default="", help="캠페인명(STT 어휘 바이어싱)")
+    ap.add_argument("--no-bias", action="store_true",
+                    help="어휘 바이어싱 끄기(initial_prompt 없음). 바이어싱 전/후 비교용 baseline")
     ap.add_argument("--raw-only", action="store_true",
                     help="LLM·화자매핑 없이 순수 Whisper 받아쓰기 원본만 저장(검증용)")
     args = ap.parse_args()
@@ -125,10 +155,17 @@ def main() -> None:
         print(f"▶ 1/2 텍스트 입력 사용(가상 STT 결과): {os.path.basename(audio)} ({len(seg_texts)} 줄)")
     else:
         import whisper
+        from meeting_ai.preprocess import ABBREV
         print(f"▶ 1/3 Whisper('{config.WHISPER_MODEL}') 로드…")
         model = whisper.load_model(config.WHISPER_MODEL)
         print(f"▶ 2/3 음성 → 텍스트 추출… ({os.path.basename(audio)})")
-        result = model.transcribe(audio, language="ko")
+        if args.no_bias:
+            print("   어휘 바이어싱: OFF (baseline)")
+            result = model.transcribe(audio, language="ko")
+        else:
+            initial_prompt = _build_bias_prompt(hint, args)
+            print(f"   어휘 바이어싱: {initial_prompt[:80]}…")
+            result = model.transcribe(audio, language="ko", initial_prompt=initial_prompt)
         lines = "\n".join(
             f"[{s['start']:.1f}s] {s['text'].strip()}" for s in result["segments"]
         )

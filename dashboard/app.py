@@ -249,7 +249,7 @@ c1, c2 = st.columns([1.3, 1])
 
 with c1:
     with st.container(border=True):
-        st.markdown('<div class="wtitle">위젯 1 · 주차별 회의 & 액션아이템 추이</div>'
+        st.markdown('<div class="wtitle">주차별 회의 & 액션아이템 추이</div>'
                     f'<div class="wsub">최근 {TREND_WEEKS}주 · 막대=발생 건수, 선=완료율 '
                     '(데이터 없는 주는 빈칸)</div>', unsafe_allow_html=True)
         if wk.height:
@@ -273,7 +273,7 @@ with c1:
 
 with c2:
     with st.container(border=True):
-        st.markdown('<div class="wtitle">위젯 2 · 담당자별 미완료 Top N</div>'
+        st.markdown('<div class="wtitle">담당자별 미완료 Top N</div>'
                     '<div class="wsub">과부하 담당자 식별 → 업무 재분배 결정</div>',
                     unsafe_allow_html=True)
         open_items = i_view.filter(pl.col("status") != "done")
@@ -298,7 +298,7 @@ c3, c4 = st.columns([1, 1])
 
 with c3:
     with st.container(border=True):
-        st.markdown('<div class="wtitle">위젯 3 · 반복 이슈 키워드 (BoW)</div>'
+        st.markdown('<div class="wtitle">반복 이슈 키워드 (BoW)</div>'
                     '<div class="wsub">여러 회의 반복 등장 = 구조적 과제 (빨강=반복 多)</div>',
                     unsafe_allow_html=True)
         docs = {r["meeting_id"]: r["text"]
@@ -319,7 +319,7 @@ with c3:
 
 with c4:
     with st.container(border=True):
-        st.markdown('<div class="wtitle">위젯 4 · LLM Confidence 분포 + 드릴다운</div>'
+        st.markdown('<div class="wtitle">LLM Confidence 분포 + 드릴다운</div>'
                     '<div class="wsub">신뢰도 낮은 항목만 사람이 검수 → 검증 비용 최소화</div>',
                     unsafe_allow_html=True)
         bands = [("0.9 이상", 0.9, 1.01, "#22a06b"), ("0.7–0.9", 0.7, 0.9, "#84cc16"),
