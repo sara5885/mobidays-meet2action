@@ -66,7 +66,7 @@ Chunk[]  ──► DuckDB (utterances / chunks)        [멱등 적재]
    ▼
 ActionItem[] ──► DuckDB (action_items)            [멱등 적재, 재실행마다 교체]
    │
-   ├─► slack_payload.py  →  data/slack_payload_sample.json
+   ├─► slack_payload.py  →  data/slack_payload_<meeting_id>.json (회의별)
    └─► dashboard/app.py  →  Streamlit 대시보드 (위젯 4개 + 상태 편집)
                               │
                               └─► action_status / status_history  (사람이 관리, 보존)

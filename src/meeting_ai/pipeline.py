@@ -85,9 +85,9 @@ def run(transcript_path: str | Path) -> dict:
            "provider": config.LLM_PROVIDER, **m}
     mfile.write_text(json.dumps(rec, ensure_ascii=False, indent=2), encoding="utf-8")
 
-    # Slack 페이로드 샘플 저장
+    # Slack 페이로드 샘플 저장 (회의별 파일 → 여러 회의 적재 시 덮어쓰지 않음)
     payload = build_slack_payload(meta.get("title") or meta["meeting_id"], all_items)
-    out = config.DATA_DIR / "slack_payload_sample.json"
+    out = config.DATA_DIR / f"slack_payload_{meta['meeting_id']}.json"
     out.write_text(json.dumps(payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
     n_low = sum(1 for a in all_items if a.confidence < 0.6)
@@ -95,9 +95,7 @@ def run(transcript_path: str | Path) -> dict:
           f"utterances={len(utterances)} chunks={len(chunks)} "
           f"action_items={len(all_items)} (낮은신뢰 {n_low}건)")
     print(f"   약어 용어집: {list(glossary.keys())}")
-    print(f"   chaining={config.CHAIN_SUMMARY_FIRST} | LLM호출 {m['calls']}회 "
-          f"· {m['seconds']}s · 토큰 {m['total_tokens']}(in {m['prompt_tokens']}/out {m['completion_tokens']})")
-    print(f"   Slack 페이로드 → {out}")
+    print(f"   Slack 페이로드 → {out.name}")
     return {"meta": meta, "n_action_items": len(all_items), "metrics": m}
 
 

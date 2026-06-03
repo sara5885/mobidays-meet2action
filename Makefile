@@ -57,4 +57,4 @@ stt:
 
 ## clean: DB·생성 산출물 제거
 clean:
-	rm -f data/db/meeting.duckdb data/db/meeting.duckdb.wal data/slack_payload_sample.json
+	rm -f data/db/meeting.duckdb data/db/meeting.duckdb.wal data/slack_payload_*.json

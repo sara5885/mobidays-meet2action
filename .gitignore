@@ -17,7 +17,7 @@ data/db/*.duckdb
 data/db/*.duckdb.wal
 # 파이프라인이 매 실행 갱신하는 계측/페이로드 샘플
 data/run_metrics.json
-data/slack_payload_sample.json
+data/slack_payload_*.json
 
 # ── STT 시행착오 산출물 (실험 비교본 — `make stt`로 재생성 가능) ──
 # 품질검증 결론은 docs/STT_품질검증.md, 대표 결과는 data/raw/*_whisper.json 만 커밋
