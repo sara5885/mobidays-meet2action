@@ -189,12 +189,12 @@ def upsert_participants(con, meeting_id: str, roster: list[dict]) -> None:
 
 
 def get_participants(con, meeting_id: str) -> list[dict]:
-    """회의↔직원 조인으로 명단 복원(이름·역할)."""
+    """회의↔직원 조인으로 명단 복원(직원id·이름·역할)."""
     rows = con.execute(
-        "SELECT e.name, e.role FROM meeting_participants mp "
+        "SELECT e.employee_id, e.name, e.role FROM meeting_participants mp "
         "JOIN employees e USING (employee_id) WHERE mp.meeting_id=? ORDER BY e.name",
         [meeting_id]).fetchall()
-    return [{"name": n, "role": r} for n, r in rows]
+    return [{"employee_id": i, "name": n, "role": r} for i, n, r in rows]
 
 
 def upsert_summary(con, meeting_id: str, summary) -> None:

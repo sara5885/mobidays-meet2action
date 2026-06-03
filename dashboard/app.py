@@ -71,6 +71,11 @@ items = con.execute("""
 utt = con.execute(
     "SELECT meeting_id, seg_id, speaker_role, text FROM utterances ORDER BY meeting_id, seg_id").pl()
 con_total = con.execute("SELECT COUNT(*) FROM action_items").fetchone()[0]
+# 직원 마스터 (담당자 선택 드롭다운용, 임시 화자 제외)
+employees = [{"employee_id": i, "name": n, "role": r} for i, n, r in con.execute(
+    "SELECT employee_id, name, role FROM employees WHERE is_adhoc=FALSE ORDER BY employee_id"
+).fetchall()]
+emp_by_id = {e["employee_id"]: e for e in employees}
 # 회의록(요약·안건·결정) + 참석자 명단
 summaries = {}
 for mid in meetings["meeting_id"].to_list():
@@ -87,6 +92,27 @@ if items.height == 0:
 adv_map = dict(zip(meetings["meeting_id"].to_list(), meetings["advertiser"].to_list()))
 items = items.with_columns(
     pl.col("meeting_id").replace_strict(adv_map, default="(미상)").alias("advertiser"))
+
+# 담당자(owner) 표시: 역할은 여러 명이 맡을 수 있으므로 '이름(직원id)·역할'로 해석.
+# (회의별 참석자 명단에서 role→직원 매핑. 같은 역할 다수면 이름들 나열, 매칭 없으면 역할 그대로)
+def _owner_display(meeting_id: str, owner: str) -> str:
+    if not owner:
+        return "담당자 미정"
+    # 사람이 드롭다운으로 고른 직원 id면 직접 해석
+    if owner in emp_by_id:
+        e = emp_by_id[owner]
+        return f"{e['name']}({e['employee_id']}) · {e['role']}"
+    # AI가 뽑은 역할 문자열이면 회의 참석자 중 그 역할자로 해석
+    matched = [p for p in participants.get(meeting_id, []) if p["role"] == owner]
+    if not matched:
+        return owner  # 자유 텍스트 등 → 그대로
+    who = ", ".join(f"{p['name']}({p['employee_id']})" for p in matched)
+    return f"{who} · {owner}"
+
+items = items.with_columns(
+    pl.struct(["meeting_id", "owner_role"])
+      .map_elements(lambda s: _owner_display(s["meeting_id"], s["owner_role"]),
+                    return_dtype=pl.String).alias("owner_disp"))
 
 # ── 헤더 + 필터 ──
 hl, hr = st.columns([3, 1])
@@ -229,8 +255,8 @@ with st.container(border=True):
 
         st.markdown("**④ 액션 아이템 (담당자 / 기한 / 할 일)**")
         ai = i_view.filter(pl.col("meeting_id") == sel).select(
-            ["owner_role", "due", "title", "status", "confidence"]).rename(
-            {"owner_role": "담당자", "due": "기한", "title": "할 일",
+            ["owner_disp", "due", "title", "status", "confidence"]).rename(
+            {"owner_disp": "담당자", "due": "기한", "title": "할 일",
              "status": "상태", "confidence": "신뢰도"})
         if ai.height:
             st.dataframe(ai.to_pandas(), use_container_width=True, hide_index=True)
@@ -250,8 +276,8 @@ c1, c2 = st.columns([1.3, 1])
 with c1:
     with st.container(border=True):
         st.markdown('<div class="wtitle">주차별 회의 & 액션아이템 추이</div>'
-                    f'<div class="wsub">최근 {TREND_WEEKS}주 · 막대=발생 건수, 선=완료율 '
-                    '(데이터 없는 주는 빈칸)</div>', unsafe_allow_html=True)
+                    f'<div class="wsub">최근 {TREND_WEEKS}주 · 막대=발생 건수, 선=완료율</div>',
+                    unsafe_allow_html=True)
         if wk.height:
             p = wk.to_pandas()
             fig = go.Figure()
@@ -273,17 +299,15 @@ with c1:
 
 with c2:
     with st.container(border=True):
-        st.markdown('<div class="wtitle">담당자별 미완료 Top N</div>'
-                    '<div class="wsub">과부하 담당자 식별 → 업무 재분배 결정</div>',
-                    unsafe_allow_html=True)
+        st.markdown('<div class="wtitle">담당자별 미완료 Top N</div>', unsafe_allow_html=True)
         open_items = i_view.filter(pl.col("status") != "done")
-        by_owner = (open_items.with_columns(pl.col("owner_role").fill_null("(담당자 미정)"))
-                    .group_by("owner_role").agg(pl.len().alias("cnt"))
+        by_owner = (open_items.with_columns(pl.col("owner_disp").fill_null("담당자 미정"))
+                    .group_by("owner_disp").agg(pl.len().alias("cnt"))
                     .sort("cnt", descending=True))
         if by_owner.height:
             p = by_owner.to_pandas()
             colors = ["#dc2626", "#ea580c", "#f59e0b", "#3b82f6", "#22a06b", "#9ca3af"]
-            fig = go.Figure(go.Bar(x=p["cnt"], y=p["owner_role"], orientation="h",
+            fig = go.Figure(go.Bar(x=p["cnt"], y=p["owner_disp"], orientation="h",
                                    marker_color=colors[:len(p)],
                                    text=[f"{v}건" for v in p["cnt"]], textposition="outside"))
             fig.update_layout(height=340, margin=dict(t=10, b=10, l=10, r=30),
@@ -322,7 +346,7 @@ with c3:
 with c4:
     with st.container(border=True):
         st.markdown('<div class="wtitle">LLM Confidence 분포 + 드릴다운</div>'
-                    '<div class="wsub">신뢰도 낮은 항목만 사람이 검수 → 검증 비용 최소화</div>',
+                    '<div class="wsub">신뢰도 낮은 항목은 검수 요망</div>',
                     unsafe_allow_html=True)
         bands = [("0.9 이상", 0.9, 1.01, "#22a06b"), ("0.7–0.9", 0.7, 0.9, "#84cc16"),
                  ("0.5–0.7", 0.5, 0.7, "#f59e0b"), ("0.5 미만", 0.0, 0.5, "#dc2626")]
@@ -338,14 +362,17 @@ with c4:
                           xaxis=dict(range=[0, 100]))
         st.plotly_chart(fig, use_container_width=True)
         low = (i_view.filter(pl.col("confidence") < 0.6)
-               .sort("confidence").select(["source_quote", "confidence"]))
+               .sort("confidence").select(["title", "owner_disp", "due", "confidence", "source_quote"]))
         st.markdown("**검수 필요 (confidence < 0.6)**")
         if low.height:
             for row in low.iter_rows(named=True):
-                q = (row["source_quote"] or "")[:48]
-                st.markdown(f'<div class="quote"><span>"{q}…"</span>'
-                            f'<span class="conf-tag">conf {row["confidence"]:.2f}</span></div>',
-                            unsafe_allow_html=True)
+                q = (row["source_quote"] or "")[:40]
+                meta_line = f'{row["owner_disp"] or "담당자 미정"} · 기한 {row["due"] or "-"}'
+                st.markdown(
+                    f'<div class="quote"><span><b>{row["title"]}</b>'
+                    f'<br><span style="color:#888;font-size:12px">{meta_line} · 근거: "{q}…"</span></span>'
+                    f'<span class="conf-tag">conf {row["confidence"]:.2f}</span></div>',
+                    unsafe_allow_html=True)
         else:
             st.success("검수가 필요한 낮은 신뢰도 항목이 없습니다.")
 
@@ -360,43 +387,65 @@ with st.container(border=True):
     STATUS_OPTS = ["open", "in_progress", "done", "blocked"]
     STATUS_KR = {"open": "⬜ 대기", "in_progress": "🔵 진행중",
                  "done": "✅ 완료", "blocked": "⛔ 지연/막힘"}
+    NONE = "__none__"
+    OWNER_OPTS = [NONE] + [e["employee_id"] for e in employees]
 
-    st.caption("담당자는 AI 추출값을 기본으로 채우되, 비어 있거나(예: STT로 화자 미상) 틀리면 "
-               "직접 수정할 수 있습니다. 수정값은 보존됩니다.")
+    def _owner_label(eid):
+        if eid == NONE:
+            return "담당자 미정"
+        e = emp_by_id[eid]
+        return f"{e['name']} · {e['role']} ({eid})"
+
+    def _cur_empid(meeting_id, owner):
+        # 현재 owner(직원id/역할/자유텍스트)를 드롭다운 기본값(직원id)으로 환산
+        if owner in emp_by_id:
+            return owner
+        for p in participants.get(meeting_id, []):
+            if p["role"] == owner:
+                return p["employee_id"]
+        return NONE
+
+    st.caption("담당자는 DB 직원 중에서 선택합니다(자유 입력 불가). 상태가 ‘지연’일 때만 사유를 입력합니다. "
+               "변경은 트래킹 레이어에 보존됩니다.")
     rows = i_view.sort(["meeting_id", "action_id"]).to_dicts()
-    with st.form("status_form"):
-        edits = {}
-        h1, h2, h3, h4 = st.columns([2.6, 1.4, 1.1, 1.7])
-        h1.caption("액션아이템"); h2.caption("담당자"); h3.caption("상태"); h4.caption("지연 사유")
-        for r in rows:
-            ck = r["action_key"]
-            col1, col2, col3, col4 = st.columns([2.6, 1.4, 1.1, 1.7])
-            col1.markdown(f"**{r['title']}**<br><span style='color:#888;font-size:12px'>"
-                          f"{r['advertiser']} · 기한 {r['due'] or '-'}</span>",
-                          unsafe_allow_html=True)
-            owner = col2.text_input("담당자", value=r["owner_role"] or "",
-                                    key=f"ow_{ck}", label_visibility="collapsed",
-                                    placeholder="담당자 미정")
-            cur = r["status"] if r["status"] in STATUS_OPTS else "open"
-            new = col3.selectbox("상태", STATUS_OPTS, index=STATUS_OPTS.index(cur),
-                                 format_func=lambda s: STATUS_KR[s],
-                                 key=f"st_{ck}", label_visibility="collapsed")
-            reason = col4.text_input("지연 사유", value=r.get("delay_reason") or "",
-                                     key=f"rs_{ck}", label_visibility="collapsed",
-                                     placeholder="지연 사유 (blocked일 때)")
-            edits[ck] = (cur, new, reason, owner, r["owner_role"] or "")
-        submitted = st.form_submit_button("💾 변경사항 저장")
+    h1, h2, h3, h4 = st.columns([2.6, 1.6, 1.1, 1.5])
+    h1.caption("액션아이템"); h2.caption("담당자"); h3.caption("상태"); h4.caption("지연 사유")
+    for r in rows:
+        ck = r["action_key"]
+        col1, col2, col3, col4 = st.columns([2.6, 1.6, 1.1, 1.5])
+        col1.markdown(f"**{r['title']}**<br><span style='color:#888;font-size:12px'>"
+                      f"{r['advertiser']} · 기한 {r['due'] or '-'}</span>",
+                      unsafe_allow_html=True)
+        cur_eid = _cur_empid(r["meeting_id"], r["owner_role"])
+        col2.selectbox("담당자", OWNER_OPTS,
+                       index=OWNER_OPTS.index(cur_eid) if cur_eid in OWNER_OPTS else 0,
+                       format_func=_owner_label, key=f"ow_{ck}", label_visibility="collapsed")
+        cur = r["status"] if r["status"] in STATUS_OPTS else "open"
+        new = col3.selectbox("상태", STATUS_OPTS, index=STATUS_OPTS.index(cur),
+                             format_func=lambda s: STATUS_KR[s],
+                             key=f"st_{ck}", label_visibility="collapsed")
+        # 지연(blocked)일 때만 사유 입력칸 표시 (form이 없어 선택 즉시 반영)
+        if new == "blocked":
+            col4.text_input("지연 사유", value=r.get("delay_reason") or "",
+                            key=f"rs_{ck}", label_visibility="collapsed", placeholder="지연 사유")
+        else:
+            col4.markdown("<span style='color:#ccc;font-size:12px'>—</span>", unsafe_allow_html=True)
 
-    if submitted:
+    if st.button("💾 변경사항 저장"):
         wcon = db.connect()
         n = 0
-        for ck, (cur, new, reason, owner, cur_owner) in edits.items():
-            cur_reason = next((r.get("delay_reason") or "" for r in rows if r["action_key"] == ck), "")
-            changed = (new != cur or (new == "blocked" and reason != cur_reason)
-                       or owner.strip() != cur_owner.strip())
+        for r in rows:
+            ck = r["action_key"]
+            new = st.session_state.get(f"st_{ck}", r["status"])
+            owner_sel = st.session_state.get(f"ow_{ck}", NONE)
+            owner_val = "" if owner_sel == NONE else owner_sel  # 직원id 저장
+            reason = st.session_state.get(f"rs_{ck}", "") if new == "blocked" else ""
+            cur_owner_eid = _cur_empid(r["meeting_id"], r["owner_role"])
+            changed = (new != r["status"]
+                       or owner_sel != cur_owner_eid
+                       or (new == "blocked" and reason != (r.get("delay_reason") or "")))
             if changed:
-                db.update_status(wcon, ck, new, reason or None,
-                                 owner=owner.strip(), by="dashboard")
+                db.update_status(wcon, ck, new, reason or None, owner=owner_val, by="dashboard")
                 n += 1
         wcon.close()
         st.success(f"{n}건 저장했습니다." if n else "변경된 항목이 없습니다.")

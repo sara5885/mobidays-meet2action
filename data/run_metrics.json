@@ -1,5 +1,5 @@
 {
-  "meeting_id": "nova-2026-05-28",
+  "meeting_id": "paynow-2026-05-20",
   "chaining": false,
   "provider": "mock",
   "calls": 2,
@@ -10,13 +10,13 @@
   "by_stage": {
     "summary": {
       "calls": 1,
-      "seconds": 1.491600414738059e-05,
+      "seconds": 1.3208002201281488e-05,
       "prompt_tokens": 0,
       "completion_tokens": 0
     },
     "extract": {
       "calls": 1,
-      "seconds": 1.6000005416572094e-05,
+      "seconds": 1.0000003385357559e-05,
       "prompt_tokens": 0,
       "completion_tokens": 0
     }
